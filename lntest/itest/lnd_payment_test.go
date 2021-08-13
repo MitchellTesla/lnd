@@ -159,8 +159,7 @@ func testListPayments(net *lntest.NetworkHarness, t *harnessTest) {
 			len(paymentsRespInit.Payments), 0)
 	}
 
-	ctxt, _ = context.WithTimeout(ctxb, channelCloseTimeout)
-	closeChannelAndAssert(ctxt, t, net, net.Alice, chanPoint, false)
+	closeChannelAndAssert(t, net, net.Alice, chanPoint, false)
 }
 
 // testPaymentFollowingChannelOpen tests that the channel transition from
@@ -250,9 +249,7 @@ func testPaymentFollowingChannelOpen(net *lntest.NetworkHarness, t *harnessTest)
 		},
 		OutputIndex: pendingUpdate.OutputIndex,
 	}
-	ctxt, cancel = context.WithTimeout(ctxb, channelCloseTimeout)
-	defer cancel()
-	closeChannelAndAssert(ctxt, t, net, net.Alice, chanPoint, false)
+	closeChannelAndAssert(t, net, net.Alice, chanPoint, false)
 }
 
 // testAsyncPayments tests the performance of the async payments.
@@ -417,8 +414,7 @@ func testAsyncPayments(net *lntest.NetworkHarness, t *harnessTest) {
 	// Finally, immediately close the channel. This function will also
 	// block until the channel is closed and will additionally assert the
 	// relevant channel closing post conditions.
-	ctxt, _ = context.WithTimeout(ctxb, channelCloseTimeout)
-	closeChannelAndAssert(ctxt, t, net, net.Alice, chanPoint, false)
+	closeChannelAndAssert(t, net, net.Alice, chanPoint, false)
 }
 
 // testBidirectionalAsyncPayments tests that nodes are able to send the
@@ -581,30 +577,39 @@ func testBidirectionalAsyncPayments(net *lntest.NetworkHarness, t *harnessTest) 
 
 	// Next query for Bob's and Alice's channel states, in order to confirm
 	// that all payment have been successful transmitted.
-	ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
-	bobInfo, err := getChanInfo(ctxt, net.Bob)
-	if err != nil {
-		t.Fatalf("unable to get bob's channel info: %v", err)
-	}
+	err = wait.NoError(func() error {
+		ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
+		bobInfo, err := getChanInfo(ctxt, net.Bob)
+		if err != nil {
+			t.Fatalf("unable to get bob's channel info: %v", err)
+		}
 
-	if bobInfo.LocalBalance != bobAmt {
-		t.Fatalf("bob's local balance is incorrect, got %v, expected"+
-			" %v", bobInfo.LocalBalance, bobAmt)
-	}
-	if bobInfo.RemoteBalance != aliceAmt {
-		t.Fatalf("bob's remote balance is incorrect, got %v, "+
-			"expected %v", bobInfo.RemoteBalance, aliceAmt)
-	}
-	if len(bobInfo.PendingHtlcs) != 0 {
-		t.Fatalf("bob's pending htlcs is incorrect, got %v, "+
-			"expected %v", len(bobInfo.PendingHtlcs), 0)
-	}
+		if bobInfo.LocalBalance != bobAmt {
+			return fmt.Errorf("bob's local balance is incorrect, "+
+				"got %v, expected %v", bobInfo.LocalBalance,
+				bobAmt)
+		}
+
+		if bobInfo.RemoteBalance != aliceAmt {
+			return fmt.Errorf("bob's remote balance is incorrect, "+
+				"got %v, expected %v", bobInfo.RemoteBalance,
+				aliceAmt)
+		}
+
+		if len(bobInfo.PendingHtlcs) != 0 {
+			return fmt.Errorf("bob's pending htlcs is incorrect, "+
+				"got %v, expected %v",
+				len(bobInfo.PendingHtlcs), 0)
+		}
+
+		return nil
+	}, defaultTimeout)
+	require.NoError(t.t, err)
 
 	// Finally, immediately close the channel. This function will also
 	// block until the channel is closed and will additionally assert the
 	// relevant channel closing post conditions.
-	ctxt, _ = context.WithTimeout(ctxb, channelCloseTimeout)
-	closeChannelAndAssert(ctxt, t, net, net.Alice, chanPoint, false)
+	closeChannelAndAssert(t, net, net.Alice, chanPoint, false)
 }
 
 func testInvoiceSubscriptions(net *lntest.NetworkHarness, t *harnessTest) {
@@ -836,6 +841,5 @@ func testInvoiceSubscriptions(net *lntest.NetworkHarness, t *harnessTest) {
 		t.Fatalf("not all invoices settled")
 	}
 
-	ctxt, _ = context.WithTimeout(ctxb, channelCloseTimeout)
-	closeChannelAndAssert(ctxt, t, net, net.Alice, chanPoint, false)
+	closeChannelAndAssert(t, net, net.Alice, chanPoint, false)
 }

@@ -194,19 +194,23 @@ func waitForGraphSync(t *harnessTest, node *lntest.HarnessNode) {
 // NOTE: This method assumes that the provided funding point is confirmed
 // on-chain AND that the edge exists in the node's channel graph. If the funding
 // transactions was reorged out at some point, use closeReorgedChannelAndAssert.
-func closeChannelAndAssert(ctx context.Context, t *harnessTest,
-	net *lntest.NetworkHarness, node *lntest.HarnessNode,
-	fundingChanPoint *lnrpc.ChannelPoint, force bool) *chainhash.Hash {
+func closeChannelAndAssert(t *harnessTest, net *lntest.NetworkHarness,
+	node *lntest.HarnessNode, fundingChanPoint *lnrpc.ChannelPoint,
+	force bool) *chainhash.Hash {
 
 	return closeChannelAndAssertType(
-		ctx, t, net, node, fundingChanPoint, false, force,
+		t, net, node, fundingChanPoint, false, force,
 	)
 }
 
-func closeChannelAndAssertType(ctx context.Context, t *harnessTest,
+func closeChannelAndAssertType(t *harnessTest,
 	net *lntest.NetworkHarness, node *lntest.HarnessNode,
 	fundingChanPoint *lnrpc.ChannelPoint,
 	anchors, force bool) *chainhash.Hash {
+
+	ctxb := context.Background()
+	ctxt, cancel := context.WithTimeout(ctxb, channelCloseTimeout)
+	defer cancel()
 
 	// Fetch the current channel policy. If the channel is currently
 	// enabled, we will register for graph notifications before closing to
@@ -221,13 +225,13 @@ func closeChannelAndAssertType(ctx context.Context, t *harnessTest,
 	// updates before initiating the channel closure.
 	var graphSub *graphSubscription
 	if expectDisable {
-		sub := subscribeGraphNotifications(ctx, t, node)
+		sub := subscribeGraphNotifications(ctxt, t, node)
 		graphSub = &sub
 		defer close(graphSub.quit)
 	}
 
 	closeUpdates, _, err := net.CloseChannel(
-		ctx, node, fundingChanPoint, force,
+		ctxt, node, fundingChanPoint, force,
 	)
 	require.NoError(t.t, err, "unable to close channel")
 
@@ -244,7 +248,7 @@ func closeChannelAndAssertType(ctx context.Context, t *harnessTest,
 	}
 
 	return assertChannelClosed(
-		ctx, t, net, node, fundingChanPoint, anchors, closeUpdates,
+		ctxt, t, net, node, fundingChanPoint, anchors, closeUpdates,
 	)
 }
 
@@ -1386,6 +1390,91 @@ func assertDLPExecuted(net *lntest.NetworkHarness, t *harnessTest,
 	assertNodeNumChannels(t, carol, 0)
 }
 
+func assertTimeLockSwept(net *lntest.NetworkHarness, t *harnessTest,
+	carol *lntest.HarnessNode, carolStartingBalance int64,
+	dave *lntest.HarnessNode, daveStartingBalance int64,
+	anchors bool) {
+
+	ctxb := context.Background()
+	expectedTxes := 2
+	if anchors {
+		expectedTxes = 3
+	}
+
+	// Carol should sweep her funds immediately, as they are not timelocked.
+	// We also expect Carol and Dave to sweep their anchor, if present.
+	_, err := waitForNTxsInMempool(
+		net.Miner.Client, expectedTxes, minerMempoolTimeout,
+	)
+	require.NoError(t.t, err, "unable to find Carol's sweep tx in mempool")
+
+	// Carol should consider the channel pending force close (since she is
+	// waiting for her sweep to confirm).
+	assertNumPendingChannels(t, carol, 0, 1)
+
+	// Dave is considering it "pending force close", as we must wait
+	// before he can sweep her outputs.
+	assertNumPendingChannels(t, dave, 0, 1)
+
+	// Mine the sweep (and anchor) tx(ns).
+	_ = mineBlocks(t, net, 1, expectedTxes)[0]
+
+	// Now Carol should consider the channel fully closed.
+	assertNumPendingChannels(t, carol, 0, 0)
+
+	// We query Carol's balance to make sure it increased after the channel
+	// closed. This checks that she was able to sweep the funds she had in
+	// the channel.
+	ctxt, _ := context.WithTimeout(ctxb, defaultTimeout)
+	balReq := &lnrpc.WalletBalanceRequest{}
+	carolBalResp, err := carol.WalletBalance(ctxt, balReq)
+	require.NoError(t.t, err, "unable to get Carol's balance")
+
+	carolBalance := carolBalResp.ConfirmedBalance
+	require.Greater(
+		t.t, carolBalance, carolStartingBalance, "balance not increased",
+	)
+
+	// After the Dave's output matures, he should reclaim his funds.
+	//
+	// The commit sweep resolver publishes the sweep tx at defaultCSV-1 and
+	// we already mined one block after the commitment was published, so
+	// take that into account.
+	mineBlocks(t, net, defaultCSV-1-1, 0)
+	daveSweep, err := waitForTxInMempool(
+		net.Miner.Client, minerMempoolTimeout,
+	)
+	require.NoError(t.t, err, "unable to find Dave's sweep tx in mempool")
+	block := mineBlocks(t, net, 1, 1)[0]
+	assertTxInBlock(t, block, daveSweep)
+
+	// Now the channel should be fully closed also from Dave's POV.
+	assertNumPendingChannels(t, dave, 0, 0)
+
+	// Make sure Dave got his balance back.
+	err = wait.NoError(func() error {
+		ctxt, _ := context.WithTimeout(ctxb, defaultTimeout)
+		daveBalResp, err := dave.WalletBalance(ctxt, balReq)
+		if err != nil {
+			return fmt.Errorf("unable to get Dave's balance: %v",
+				err)
+		}
+
+		daveBalance := daveBalResp.ConfirmedBalance
+		if daveBalance <= daveStartingBalance {
+			return fmt.Errorf("expected dave to have balance "+
+				"above %d, instead had %v", daveStartingBalance,
+				daveBalance)
+		}
+
+		return nil
+	}, defaultTimeout)
+	require.NoError(t.t, err)
+
+	assertNodeNumChannels(t, dave, 0)
+	assertNodeNumChannels(t, carol, 0)
+}
+
 // verifyCloseUpdate is used to verify that a closed channel update is of the
 // expected type.
 func verifyCloseUpdate(chanUpdate *lnrpc.ChannelEventUpdate,
@@ -1401,6 +1490,7 @@ func verifyCloseUpdate(chanUpdate *lnrpc.ChannelEventUpdate,
 				lnrpc.ChannelEventUpdate_INACTIVE_CHANNEL,
 				chanUpdate.Type)
 		}
+
 	case *lnrpc.ChannelEventUpdate_ClosedChannel:
 		if chanUpdate.Type !=
 			lnrpc.ChannelEventUpdate_CLOSED_CHANNEL {
@@ -1420,6 +1510,13 @@ func verifyCloseUpdate(chanUpdate *lnrpc.ChannelEventUpdate,
 			return fmt.Errorf("expected close intiator: %v, got: %v",
 				closeInitiator,
 				update.ClosedChannel.CloseInitiator)
+		}
+
+	case *lnrpc.ChannelEventUpdate_FullyResolvedChannel:
+		if chanUpdate.Type != lnrpc.ChannelEventUpdate_FULLY_RESOLVED_CHANNEL {
+			return fmt.Errorf("update type mismatch: expected %v, got %v",
+				lnrpc.ChannelEventUpdate_FULLY_RESOLVED_CHANNEL,
+				chanUpdate.Type)
 		}
 
 	default:

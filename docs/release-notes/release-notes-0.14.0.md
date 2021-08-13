@@ -41,6 +41,11 @@ you.
 * [Makes publishtransaction, in the wallet sub-server, reachable through 
   lncli](https://github.com/lightningnetwork/lnd/pull/5460).
 
+# Safety
+
+* Locally force closed channels are now [kept in the channel.backup file until
+  their time lock has fully matured](https://github.com/lightningnetwork/lnd/pull/5528).
+
 # Build System
 
 * [A new pre-submit check has been
@@ -57,6 +62,8 @@ you.
 
 * [A flake in the Neutrino integration tests with anchor sweeps was 
   addressed](https://github.com/lightningnetwork/lnd/pull/5509).
+
+* [The `lnwire` fuzz tests have been fixed and now run without crashing.](https://github.com/lightningnetwork/lnd/pull/5395)
 
 # Documentation
 
@@ -80,6 +87,8 @@ you.
 
 ## Code cleanup, refactor, typo fixes
 
+* [Refactor the interaction between the `htlcswitch` and `peer` packages for cleaner separation.](https://github.com/lightningnetwork/lnd/pull/5603)
+
 * [Unused error check 
   removed](https://github.com/lightningnetwork/lnd/pull/5537).
 
@@ -94,6 +103,10 @@ you.
   alert](https://github.com/lightningnetwork/lnd/pull/5576).
 
 * [Fixed timeout flakes in async payment benchmark tests](https://github.com/lightningnetwork/lnd/pull/5579).
+
+* [Flake fix in async bidirectional payment test](https://github.com/lightningnetwork/lnd/pull/5607).
+
+* [Fixed context timeout when closing channels in tests](https://github.com/lightningnetwork/lnd/pull/5616).
 
 * [Fixed a missing import and git tag in the healthcheck package](https://github.com/lightningnetwork/lnd/pull/5582).
 
@@ -119,15 +132,26 @@ you.
 * [Update MC store in blocks](https://github.com/lightningnetwork/lnd/pull/5515)
   to make payment throughput better when using etcd.
 
+* [The `lnwire` package now uses a write buffer pool](https://github.com/lightningnetwork/lnd/pull/4884)
+  when encoding/decoding messages. Such that most of the heap escapes are fixed,
+  resulting in less memory being used when running `lnd`.
+
 ## Bug Fixes
 
 A bug has been fixed that would cause `lnd` to [try to bootstrap using the
 currnet DNS seeds when in SigNet
 mode](https://github.com/lightningnetwork/lnd/pull/5564).
 
+## Documentation 
+
+The [code contribution guidelines have been updated to mention the new
+requirements surrounding updating the release notes for each new
+change](https://github.com/lightningnetwork/lnd/pull/5613). 
+
 # Contributors (Alphabetical Order)
 * Andras Banki-Horvath
 * ErikEk
+* Eugene Siegel
 * Martin Habovstiak
 * Zero-1729
 * Oliver Gugger

@@ -316,6 +316,9 @@ Examples of common patterns w.r.t commit structures within the project:
     be a single commit which adds the new functionality, with follow up
     induvidual commits that begin to intergrate the functionality within the
     codebase.
+  * If a PR only fixes a trivial issue, such as updating documentations on a
+    small scale, fix typo, or any changes that do not modify the code, the
+    commit message should end with `[skip ci]` to skip the CI checks.
 
 ## Code Spacing 
 
@@ -550,6 +553,12 @@ can set it to auto squash the fix up commits on rebase.
 This process will continue until the code is finally accepted.
 
 ## Acceptance
+
+Before your code is accepted, the [release notes we keep in-tree for the next
+upcoming milestone should be extended to describe the changes contained in your
+PR](https://github.com/lightningnetwork/lnd/tree/master/docs/release-notes).
+Unless otherwise mentioned by the reviewers of your PR, the description of your
+changes should live in the document set for the _next_ major release. 
 
 Once your code is accepted, it will be integrated with the master branch. After
 2+ (sometimes 1) LGTM's (approvals) are given on a PR, it's eligible to land in
