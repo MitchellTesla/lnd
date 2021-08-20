@@ -25,6 +25,12 @@ for more information.
 * [Stub code for interacting with `lnrpc` from a WASM context through JSON 
   messages was added](https://github.com/lightningnetwork/lnd/pull/5601).
 
+## Wallet
+
+* It is now possible to fund a psbt [without specifying any
+  outputs](https://github.com/lightningnetwork/lnd/pull/5442). This option is
+  useful for CPFP bumping of unconfirmed outputs or general utxo consolidation.
+
 ## Security 
 
 ### Admin macaroon permissions
@@ -108,11 +114,15 @@ you.
 
 * [Fixed context timeout when closing channels in tests](https://github.com/lightningnetwork/lnd/pull/5616).
 
+* [Fixed transaction not found in mempool flake in commitment deadline itest](https://github.com/lightningnetwork/lnd/pull/5615).
+
 * [Fixed a missing import and git tag in the healthcheck package](https://github.com/lightningnetwork/lnd/pull/5582).
 
 * [Fixed a data race in payment unit test](https://github.com/lightningnetwork/lnd/pull/5573).
 
 * [Missing dots in cmd interface](https://github.com/lightningnetwork/lnd/pull/5535).
+
+* [Link channel point logging](https://github.com/lightningnetwork/lnd/pull/5508)
 
 ## Database
 
@@ -141,6 +151,8 @@ you.
 A bug has been fixed that would cause `lnd` to [try to bootstrap using the
 currnet DNS seeds when in SigNet
 mode](https://github.com/lightningnetwork/lnd/pull/5564).
+
+[A validation check for sane `CltvLimit` and `FinalCltvDelta` has been added for `REST`-initiated payments.](https://github.com/lightningnetwork/lnd/pull/5591)
 
 ## Documentation 
 
