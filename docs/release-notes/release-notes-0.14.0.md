@@ -1,8 +1,15 @@
 # Release Notes
 
-# Backend Enhancements & Optimizations
+## Networking & Tor
 
-## Full remote database support
+A new flag has been added to enable a hybrid tor connectivity mode, where tor
+is only used for onion address connections, and clearnet for everything else.
+This new behavior can be added using the `tor.skip-proxy-for-clearnet-targets`
+flag.
+
+## Backend Enhancements & Optimizations
+
+### Full remote database support
 
 `lnd` now stores [all its data in the same remote/external
 database](https://github.com/lightningnetwork/lnd/pull/5484) such as `etcd`
@@ -25,11 +32,26 @@ for more information.
 * [Stub code for interacting with `lnrpc` from a WASM context through JSON 
   messages was added](https://github.com/lightningnetwork/lnd/pull/5601).
 
+* LND now [reports to systemd](https://github.com/lightningnetwork/lnd/pull/5536)
+  that RPC is ready (port bound, certificate generated, macaroons created,
+  in case of `wallet-unlock-password-file` wallet unlocked). This can be used to
+  avoid misleading error messages from dependent services if they use `After`
+  systemd option.
+
 ## Wallet
 
 * It is now possible to fund a psbt [without specifying any
   outputs](https://github.com/lightningnetwork/lnd/pull/5442). This option is
   useful for CPFP bumping of unconfirmed outputs or general utxo consolidation.
+* The internal wallet can now also be created or restored by using an [extended
+  master root key (`xprv`) instead of an
+  `aezeed`](https://github.com/lightningnetwork/lnd/pull/4717) only. This allows
+  wallet integrators to use existing seed mechanism that might already be in
+  place. **It is still not supported to use the same seed/root key on multiple
+  `lnd` instances simultaneously** though.
+
+* [Publish transaction is now reachable through 
+  lncli](https://github.com/lightningnetwork/lnd/pull/5460).
 
 ## Security 
 
@@ -44,15 +66,12 @@ If you use a strange system or changed group membership of the group running LND
 you may want to check your system to see if it introduces additional risk for
 you.
 
-* [Makes publishtransaction, in the wallet sub-server, reachable through 
-  lncli](https://github.com/lightningnetwork/lnd/pull/5460).
-
-# Safety
+## Safety
 
 * Locally force closed channels are now [kept in the channel.backup file until
   their time lock has fully matured](https://github.com/lightningnetwork/lnd/pull/5528).
 
-# Build System
+## Build System
 
 * [A new pre-submit check has been
   added](https://github.com/lightningnetwork/lnd/pull/5520) to ensure that all
@@ -71,7 +90,12 @@ you.
 
 * [The `lnwire` fuzz tests have been fixed and now run without crashing.](https://github.com/lightningnetwork/lnd/pull/5395)
 
-# Documentation
+* [A flake in the race unit
+  tests](https://github.com/lightningnetwork/lnd/pull/5659) was addressed that
+  lead to failed tests sometimes when the CPU of the GitHub CI runner was
+  strained too much.
+
+## Documentation
 
 * [Outdated warning about unsupported pruning was replaced with clarification that LND **does**
   support pruning](https://github.com/lightningnetwork/lnd/pull/5553)
@@ -82,16 +106,16 @@ you.
    CPFP) and that more information (e.g., specific sat amounts) can be found
    in the debug logs.
 
-# Misc
+## Misc
 
 * The direct use of certain syscalls in packages such as `bbolt` or `lnd`'s own
   `healthcheck` package made it impossible to import `lnd` code as a library
   into projects that are compiled to WASM binaries. [That problem was fixed by
   guarding those syscalls with build tags](https://github.com/lightningnetwork/lnd/pull/5526).
 
-# Code Health
+## Code Health
 
-## Code cleanup, refactor, typo fixes
+### Code cleanup, refactor, typo fixes
 
 * [Refactor the interaction between the `htlcswitch` and `peer` packages for cleaner separation.](https://github.com/lightningnetwork/lnd/pull/5603)
 
@@ -104,6 +128,8 @@ you.
 * [Added minor fixes to contribution guidelines](https://github.com/lightningnetwork/lnd/pull/5503).
 
 * [Fixed typo in `dest_custom_records` description comment](https://github.com/lightningnetwork/lnd/pull/5541).
+
+* [Fixed payment test error message.](https://github.com/lightningnetwork/lnd/pull/5559)
 
 * [Bumped version of `github.com/miekg/dns` library to fix a Dependabot
   alert](https://github.com/lightningnetwork/lnd/pull/5576).
@@ -123,6 +149,11 @@ you.
 * [Missing dots in cmd interface](https://github.com/lightningnetwork/lnd/pull/5535).
 
 * [Link channel point logging](https://github.com/lightningnetwork/lnd/pull/5508)
+
+* [Fixed context leak in integration tests, and properly handled context
+  timeout](https://github.com/lightningnetwork/lnd/pull/5646).
+
+* [Removed nested db tx](https://github.com/lightningnetwork/lnd/pull/5643)
 
 ## Database
 
@@ -146,6 +177,11 @@ you.
   when encoding/decoding messages. Such that most of the heap escapes are fixed,
   resulting in less memory being used when running `lnd`.
 
+## Log system
+
+* [Save compressed log files from logrorate during 
+  itest](https://github.com/lightningnetwork/lnd/pull/5354).
+
 ## Bug Fixes
 
 A bug has been fixed that would cause `lnd` to [try to bootstrap using the
@@ -162,10 +198,11 @@ change](https://github.com/lightningnetwork/lnd/pull/5613).
 
 # Contributors (Alphabetical Order)
 * Andras Banki-Horvath
+* de6df1re
 * ErikEk
 * Eugene Siegel
 * Martin Habovstiak
-* Zero-1729
 * Oliver Gugger
 * xanoni
 * Yong Yu
+* Zero-1729

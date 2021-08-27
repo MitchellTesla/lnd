@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"net"
@@ -186,6 +187,10 @@ type ListenerCfg struct {
 	// callback to register external REST subservers.
 	ExternalRestRegistrar RestRegistrar
 }
+
+var errStreamIsolationWithProxySkip = errors.New(
+	"while stream isolation is enabled, the TOR proxy may not be skipped",
+)
 
 // Main is the true entry point for lnd. It accepts a fully populated and
 // validated main configuration struct and an optional listener config struct.
@@ -537,6 +542,10 @@ func Main(cfg *Config, lisCfg ListenerCfg, interceptor signal.Interceptor) error
 	// to the default behavior of waiting for the wallet creation/unlocking
 	// over RPC.
 	default:
+		if err := interceptor.Notifier.NotifyReady(false); err != nil {
+			return err
+		}
+
 		params, err := waitForWalletPassword(
 			cfg, pwService, []btcwallet.LoaderOption{dbs.walletDB},
 			interceptor.ShutdownChannel(),
@@ -744,10 +753,19 @@ func Main(cfg *Config, lisCfg ListenerCfg, interceptor signal.Interceptor) error
 		return err
 	}
 
+	if cfg.Tor.StreamIsolation && cfg.Tor.SkipProxyForClearNetTargets {
+		return errStreamIsolationWithProxySkip
+	}
+
 	if cfg.Tor.Active {
-		srvrLog.Infof("Proxying all network traffic via Tor "+
-			"(stream_isolation=%v)! NOTE: Ensure the backend node "+
-			"is proxying over Tor as well", cfg.Tor.StreamIsolation)
+		if cfg.Tor.SkipProxyForClearNetTargets {
+			srvrLog.Info("Onion services are accessible via Tor! NOTE: " +
+				"Traffic to clearnet services is not routed via Tor.")
+		} else {
+			srvrLog.Infof("Proxying all network traffic via Tor "+
+				"(stream_isolation=%v)! NOTE: Ensure the backend node "+
+				"is proxying over Tor as well", cfg.Tor.StreamIsolation)
+		}
 	}
 
 	// If tor is active and either v2 or v3 onion services have been specified,
@@ -892,6 +910,10 @@ func Main(cfg *Config, lisCfg ListenerCfg, interceptor signal.Interceptor) error
 
 	// We transition the RPC state to Active, as the RPC server is up.
 	interceptorChain.SetRPCActive()
+
+	if err := interceptor.Notifier.NotifyReady(true); err != nil {
+		return err
+	}
 
 	// If we're not in regtest or simnet mode, We'll wait until we're fully
 	// synced to continue the start up of the remainder of the daemon. This
@@ -1470,13 +1492,17 @@ func waitForWalletPassword(cfg *Config,
 	case initMsg := <-pwService.InitMsgs:
 		password := initMsg.Passphrase
 		cipherSeed := initMsg.WalletSeed
+		extendedKey := initMsg.WalletExtendedKey
 		recoveryWindow := initMsg.RecoveryWindow
 
 		// Before we proceed, we'll check the internal version of the
 		// seed. If it's greater than the current key derivation
 		// version, then we'll return an error as we don't understand
 		// this.
-		if cipherSeed.InternalVersion != keychain.KeyDerivationVersion {
+		const latestVersion = keychain.KeyDerivationVersion
+		if cipherSeed != nil &&
+			cipherSeed.InternalVersion != latestVersion {
+
 			return nil, fmt.Errorf("invalid internal "+
 				"seed version %v, current version is %v",
 				cipherSeed.InternalVersion,
@@ -1493,10 +1519,36 @@ func waitForWalletPassword(cfg *Config,
 
 		// With the seed, we can now use the wallet loader to create
 		// the wallet, then pass it back to avoid unlocking it again.
-		birthday := cipherSeed.BirthdayTime()
-		newWallet, err := loader.CreateNewWallet(
-			password, password, cipherSeed.Entropy[:], birthday,
+		var (
+			birthday  time.Time
+			newWallet *wallet.Wallet
 		)
+		switch {
+		// A normal cipher seed was given, use the birthday encoded in
+		// it and create the wallet from that.
+		case cipherSeed != nil:
+			birthday = cipherSeed.BirthdayTime()
+			newWallet, err = loader.CreateNewWallet(
+				password, password, cipherSeed.Entropy[:],
+				birthday,
+			)
+
+		// No seed was given, we're importing a wallet from its extended
+		// private key.
+		case extendedKey != nil:
+			birthday = initMsg.ExtendedKeyBirthday
+			newWallet, err = loader.CreateNewWalletExtendedKey(
+				password, password, extendedKey, birthday,
+			)
+
+		default:
+			// The unlocker service made sure either the cipher seed
+			// or the extended key is set so, we shouldn't get here.
+			// The default case is just here for readability and
+			// completeness.
+			err = fmt.Errorf("cannot create wallet, neither seed " +
+				"nor extended key was given")
+		}
 		if err != nil {
 			// Don't leave the file open in case the new wallet
 			// could not be created for whatever reason.
