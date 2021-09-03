@@ -7,6 +7,25 @@ is only used for onion address connections, and clearnet for everything else.
 This new behavior can be added using the `tor.skip-proxy-for-clearnet-targets`
 flag.
 
+## LN Peer-to-Peer Netowrk
+
+### Bitcoin Blockheaders in Ping Messages
+
+[In this release, we implement a long discussed mechanism to use the Lightning
+Network as a redundant block header
+source](https://github.com/lightningnetwork/lnd/pull/5621). By sending our
+latest block header with each ping message, we give peers another source
+(outside of the Bitcoin P2P network) they can use to spot check their chain
+state. Peers can also use this information to detect if they've been eclipsed
+from the traditional Bitcoin P2P network itself.
+
+As is, we only send this data in Ping messages (which are periodically sent),
+in the future we could also move to send them as the partial payload for our
+pong messages, and also randomize the payload size requested as well.
+
+The `ListPeers` RPC call will now also include a hex encoded version of the
+last ping message the peer has sent to us.
+
 ## Backend Enhancements & Optimizations
 
 ### Full remote database support
@@ -18,6 +37,17 @@ stateless and therefore makes switching over to a new leader instance almost
 instantaneous. Read the [guide on leader
 election](https://github.com/lightningnetwork/lnd/blob/master/docs/leader_election.md)
 for more information.
+
+## Protocol Extensions
+
+### Explicit Channel Negotiation
+
+[A new protocol extension has been added known as explicit channel negotiation]
+(https://github.com/lightningnetwork/lnd/pull/5669). This allows a channel
+initiator to signal their desired channel type to use with the remote peer. If
+the remote peer supports said channel type and agrees, the previous implicit
+negotiation based on the shared set of feature bits is bypassed, and the
+proposed channel type is used.
 
 ## RPC Server
 
@@ -150,6 +180,8 @@ you.
 
 * [Link channel point logging](https://github.com/lightningnetwork/lnd/pull/5508)
 
+* [Canceling the chain notifier no longer logs certain errors](https://github.com/lightningnetwork/lnd/pull/5676)
+
 * [Fixed context leak in integration tests, and properly handled context
   timeout](https://github.com/lightningnetwork/lnd/pull/5646).
 
@@ -177,6 +209,18 @@ you.
   when encoding/decoding messages. Such that most of the heap escapes are fixed,
   resulting in less memory being used when running `lnd`.
 
+* [`lnd` will now no longer (in a steady state) need to open a new database
+  transaction each time a private key needs to be derived for signing or ECDH
+  operations]https://github.com/lightningnetwork/lnd/pull/5629). This results
+  in a massive performance improvement across several routine operations at the
+
+* [When decrypting incoming encrypted brontide messages on the wire, we'll now
+  properly re-use the buffer that was allocated for the ciphertext to store the
+  plaintext]https://github.com/lightningnetwork/lnd/pull/5622). When combined
+  with the buffer pool, this ensures that we no longer need to allocate a new
+  buffer each time we decrypt an incoming message, as we
+  recycle these buffers in the peer.
+
 ## Log system
 
 * [Save compressed log files from logrorate during 
@@ -189,6 +233,8 @@ currnet DNS seeds when in SigNet
 mode](https://github.com/lightningnetwork/lnd/pull/5564).
 
 [A validation check for sane `CltvLimit` and `FinalCltvDelta` has been added for `REST`-initiated payments.](https://github.com/lightningnetwork/lnd/pull/5591)
+
+[A bug has been fixed with Neutrino's `RegisterConfirmationsNtfn` and `RegisterSpendNtfn` calls that would cause notifications to be missed.](https://github.com/lightningnetwork/lnd/pull/5453)
 
 ## Documentation 
 
@@ -203,6 +249,7 @@ change](https://github.com/lightningnetwork/lnd/pull/5613).
 * Eugene Siegel
 * Martin Habovstiak
 * Oliver Gugger
+* Wilmer Paulino
 * xanoni
 * Yong Yu
 * Zero-1729

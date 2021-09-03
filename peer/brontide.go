@@ -347,6 +347,13 @@ type Brontide struct {
 	// our last ping message. To be used atomically.
 	pingLastSend int64
 
+	// lastPingPayload stores an unsafe pointer wrapped as an atomic
+	// variable which points to the last payload the remote party sent us
+	// as their ping.
+	//
+	// MUST be used atomically.
+	lastPingPayload atomic.Value
+
 	cfg Config
 
 	// activeSignal when closed signals that the peer is now active and
@@ -944,7 +951,10 @@ func (p *Brontide) readNextMessage() (lnwire.Message, error) {
 	// reading incrementally from the stream as the Lightning wire protocol
 	// is message oriented and allows nodes to pad on additional data to
 	// the message stream.
-	var rawMsg []byte
+	var (
+		nextMsg lnwire.Message
+		msgLen  uint64
+	)
 	err = p.cfg.ReadPool.Submit(func(buf *buffer.Read) error {
 		// Before reading the body of the message, set the read timeout
 		// accordingly to ensure we don't block other readers using the
@@ -957,18 +967,29 @@ func (p *Brontide) readNextMessage() (lnwire.Message, error) {
 			return readErr
 		}
 
-		rawMsg, readErr = noiseConn.ReadNextBody(buf[:pktLen])
-		return readErr
-	})
-	atomic.AddUint64(&p.bytesReceived, uint64(len(rawMsg)))
-	if err != nil {
-		return nil, err
-	}
+		// The ReadNextBody method will actually end up re-using the
+		// buffer, so within this closure, we can continue to use
+		// rawMsg as it's just a slice into the buf from the buffer
+		// pool.
+		rawMsg, readErr := noiseConn.ReadNextBody(buf[:pktLen])
+		if readErr != nil {
+			return readErr
+		}
+		msgLen = uint64(len(rawMsg))
 
-	// Next, create a new io.Reader implementation from the raw message,
-	// and use this to decode the message directly from.
-	msgReader := bytes.NewReader(rawMsg)
-	nextMsg, err := lnwire.ReadMessage(msgReader, 0)
+		// Next, create a new io.Reader implementation from the raw
+		// message, and use this to decode the message directly from.
+		msgReader := bytes.NewReader(rawMsg)
+		nextMsg, err = lnwire.ReadMessage(msgReader, 0)
+		if err != nil {
+			return err
+		}
+
+		// At this point, rawMsg and buf will be returned back to the
+		// buffer pool for re-use.
+		return nil
+	})
+	atomic.AddUint64(&p.bytesReceived, msgLen)
 	if err != nil {
 		return nil, err
 	}
@@ -1368,6 +1389,14 @@ out:
 			atomic.StoreInt64(&p.pingTime, delay)
 
 		case *lnwire.Ping:
+			// First, we'll store their latest ping payload within
+			// the relevant atomic variable.
+			p.lastPingPayload.Store(msg.PaddingBytes[:])
+
+			// Next, we'll send over the amount of specified pong
+			// bytes.
+			//
+			// TODO(roasbeef): read out from pong scratch instead?
 			pongBytes := make([]byte, msg.NumPongBytes)
 			p.queueMsg(lnwire.NewPong(pongBytes), nil)
 
@@ -1630,12 +1659,10 @@ func messageSummary(msg lnwire.Message) string {
 			msg.NodeID, time.Unix(int64(msg.Timestamp), 0))
 
 	case *lnwire.Ping:
-		// No summary.
-		return ""
+		return fmt.Sprintf("ping_bytes=%x", msg.PaddingBytes[:])
 
 	case *lnwire.Pong:
-		// No summary.
-		return ""
+		return fmt.Sprintf("pong_bytes=%x", msg.PongBytes[:])
 
 	case *lnwire.UpdateFee:
 		return fmt.Sprintf("chan_id=%v, fee_update_sat=%v",
@@ -1983,13 +2010,50 @@ func (p *Brontide) pingHandler() {
 	defer pingTicker.Stop()
 
 	// TODO(roasbeef): make dynamic in order to create fake cover traffic
-	const numPingBytes = 16
+	const numPongBytes = 16
 
+	blockEpochs, err := p.cfg.ChainNotifier.RegisterBlockEpochNtfn(nil)
+	if err != nil {
+		peerLog.Errorf("unable to establish block epoch "+
+			"subscription: %v", err)
+	}
+
+	var (
+		pingPayload [wire.MaxBlockHeaderPayload]byte
+		blockHeader *wire.BlockHeader
+	)
 out:
 	for {
 		select {
+		// Each time a new block comes in, we'll copy the raw header
+		// contents over to our ping payload declared above. Over time,
+		// we'll use this to disseminate the latest block header
+		// between all our peers, which can later be used to
+		// cross-check our own view of the network to mitigate various
+		// types of eclipse attacks.
+		case epoch, ok := <-blockEpochs.Epochs:
+			if !ok {
+				peerLog.Debugf("block notifications " +
+					"canceled")
+				return
+			}
+
+			blockHeader = epoch.BlockHeader
+			headerBuf := bytes.NewBuffer(pingPayload[0:0])
+			err := blockHeader.Serialize(headerBuf)
+			if err != nil {
+				peerLog.Errorf("unable to encode header: %v",
+					err)
+			}
+
 		case <-pingTicker.C:
-			p.queueMsg(lnwire.NewPing(numPingBytes), nil)
+
+			pingMsg := &lnwire.Ping{
+				NumPongBytes: numPongBytes,
+				PaddingBytes: pingPayload[:],
+			}
+
+			p.queueMsg(pingMsg, nil)
 		case <-p.quit:
 			break out
 		}
@@ -3125,4 +3189,20 @@ func (p *Brontide) BytesReceived() uint64 {
 // BytesSent returns the number of bytes sent to the peer.
 func (p *Brontide) BytesSent() uint64 {
 	return atomic.LoadUint64(&p.bytesSent)
+}
+
+// LastRemotePingPayload returns the last payload the remote party sent as part
+// of their ping.
+func (p *Brontide) LastRemotePingPayload() []byte {
+	pingPayload := p.lastPingPayload.Load()
+	if pingPayload == nil {
+		return []byte{}
+	}
+
+	pingBytes, ok := pingPayload.(lnwire.PingPayload)
+	if !ok {
+		return nil
+	}
+
+	return pingBytes
 }
