@@ -442,6 +442,10 @@ func MainRPCServerPermissions() map[string][]bakery.Op {
 			Entity: "offchain",
 			Action: "read",
 		}},
+		"/lnrpc.Lightning/DeletePayment": {{
+			Entity: "offchain",
+			Action: "write",
+		}},
 		"/lnrpc.Lightning/DeleteAllPayments": {{
 			Entity: "offchain",
 			Action: "write",
@@ -2920,7 +2924,13 @@ func (r *rpcServer) SubscribePeerEvents(req *lnrpc.PeerEventSubscription,
 				return err
 			}
 
+		// The response stream's context for whatever reason has been
+		// closed. If context is closed by an exceeded deadline we will
+		// return an error.
 		case <-eventStream.Context().Done():
+			if errors.Is(eventStream.Context().Err(), context.Canceled) {
+				return nil
+			}
 			return eventStream.Context().Err()
 
 		case <-r.quit:
@@ -4210,7 +4220,13 @@ func (r *rpcServer) SubscribeChannelEvents(req *lnrpc.ChannelEventSubscription,
 				return err
 			}
 
+		// The response stream's context for whatever reason has been
+		// closed. If context is closed by an exceeded deadline we will
+		// return an error.
 		case <-updateStream.Context().Done():
+			if errors.Is(updateStream.Context().Err(), context.Canceled) {
+				return nil
+			}
 			return updateStream.Context().Err()
 
 		case <-r.quit:
@@ -5158,7 +5174,13 @@ func (r *rpcServer) SubscribeInvoices(req *lnrpc.InvoiceSubscription,
 				return err
 			}
 
+		// The response stream's context for whatever reason has been
+		// closed. If context is closed by an exceeded deadline we will
+		// return an error.
 		case <-updateStream.Context().Done():
+			if errors.Is(updateStream.Context().Err(), context.Canceled) {
+				return nil
+			}
 			return updateStream.Context().Err()
 
 		case <-r.quit:
@@ -5219,8 +5241,14 @@ func (r *rpcServer) SubscribeTransactions(req *lnrpc.GetTransactionsRequest,
 				return err
 			}
 
+		// The response stream's context for whatever reason has been
+		// closed. If context is closed by an exceeded deadline we will
+		// return an error.
 		case <-updateStream.Context().Done():
-			rpcsLog.Infof("Cancelling transaction subscription")
+			rpcsLog.Infof("Canceling transaction subscription")
+			if errors.Is(updateStream.Context().Err(), context.Canceled) {
+				return nil
+			}
 			return updateStream.Context().Err()
 
 		case <-r.quit:
@@ -5761,9 +5789,13 @@ func (r *rpcServer) SubscribeChannelGraph(req *lnrpc.GraphTopologySubscription,
 				return err
 			}
 
-		// The context was cancelled so we report a cancellation error
-		// and exit immediately.
+		// The response stream's context for whatever reason has been
+		// closed. If context is closed by an exceeded deadline
+		// we will return an error.
 		case <-updateStream.Context().Done():
+			if errors.Is(updateStream.Context().Err(), context.Canceled) {
+				return nil
+			}
 			return updateStream.Context().Err()
 
 		// The server is quitting, so we'll exit immediately. Returning
@@ -5904,6 +5936,31 @@ func (r *rpcServer) ListPayments(ctx context.Context,
 	}
 
 	return paymentsResp, nil
+}
+
+// DeletePayment deletes a payment from the DB given its payment hash. If
+// failedHtlcsOnly is set, only failed HTLC attempts of the payment will be
+// deleted.
+func (r *rpcServer) DeletePayment(ctx context.Context,
+	req *lnrpc.DeletePaymentRequest) (
+	*lnrpc.DeletePaymentResponse, error) {
+
+	hash, err := lntypes.MakeHash(req.PaymentHash)
+	if err != nil {
+		return nil, err
+	}
+
+	rpcsLog.Infof("[DeletePayment] payment_identifier=%v, "+
+		"failed_htlcs_only=%v", hash, req.FailedHtlcsOnly)
+
+	err = r.server.chanStateDB.DeletePayment(
+		hash, req.FailedHtlcsOnly,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return &lnrpc.DeletePaymentResponse{}, nil
 }
 
 // DeleteAllPayments deletes all outgoing payments from DB.
@@ -6688,7 +6745,13 @@ func (r *rpcServer) SubscribeChannelBackups(req *lnrpc.ChannelBackupSubscription
 				return err
 			}
 
+		// The response stream's context for whatever reason has been
+		// closed. If context is closed by an exceeded deadline we will
+		// return an error.
 		case <-updateStream.Context().Done():
+			if errors.Is(updateStream.Context().Err(), context.Canceled) {
+				return nil
+			}
 			return updateStream.Context().Err()
 
 		case <-r.quit:

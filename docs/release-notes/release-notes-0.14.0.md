@@ -68,6 +68,8 @@ proposed channel type is used.
   avoid misleading error messages from dependent services if they use `After`
   systemd option.
 
+* [Delete a specific payment, or its failed HTLCs](https://github.com/lightningnetwork/lnd/pull/5660).
+
 ### Batched channel funding
 
 [Multiple channels can now be opened in a single
@@ -179,6 +181,9 @@ you.
 
 * [Fixed timeout flakes in async payment benchmark tests](https://github.com/lightningnetwork/lnd/pull/5579).
 
+* [State, subscribechannelevents, subscribepeerevents, subscribeinvoices, subscribetransactions, 
+  subscribechannelgraph and subscribechannelbackups no longer logs certain errors](https://github.com/lightningnetwork/lnd/pull/5695).
+
 * [Flake fix in async bidirectional payment test](https://github.com/lightningnetwork/lnd/pull/5607).
 
 * [Fixed context timeout when closing channels in tests](https://github.com/lightningnetwork/lnd/pull/5616).
@@ -201,6 +206,8 @@ you.
 * [Removed nested db tx](https://github.com/lightningnetwork/lnd/pull/5643)
 
 * [Fixed wallet recovery itests on Travis ARM](https://github.com/lightningnetwork/lnd/pull/5688)
+
+* [Integration tests save embedded etcd logs to help debugging flakes](https://github.com/lightningnetwork/lnd/pull/5702)
 
 ## Database
 
@@ -257,6 +264,8 @@ mode](https://github.com/lightningnetwork/lnd/pull/5564).
 [A validation check for sane `CltvLimit` and `FinalCltvDelta` has been added for `REST`-initiated payments.](https://github.com/lightningnetwork/lnd/pull/5591)
 
 [A bug has been fixed with Neutrino's `RegisterConfirmationsNtfn` and `RegisterSpendNtfn` calls that would cause notifications to be missed.](https://github.com/lightningnetwork/lnd/pull/5453)
+
+[A bug has been fixed when registering for spend notifications in the `txnotifier`. A re-org notification would previously not be dispatched in certain scenarios.](https://github.com/lightningnetwork/lnd/pull/5465)
 
 ## Documentation 
 
