@@ -70,6 +70,12 @@ proposed channel type is used.
 
 * [Delete a specific payment, or its failed HTLCs](https://github.com/lightningnetwork/lnd/pull/5660).
 
+* A new state, [`WalletState_SERVER_ACTIVE`](https://github.com/lightningnetwork/lnd/pull/5637),
+  is added to the state server. This state indicates whether the `lnd` server
+  and all its subservers have been fully started or not.
+
+* [Adds an option to the BakeMacaroon rpc "allow-external-permissions,"](https://github.com/lightningnetwork/lnd/pull/5304) which makes it possible to bake a macaroon with external permissions. That way, the baked macaroons can be used for services beyond LND. Also adds a new CheckMacaroonPermissions rpc that checks that the macaroon permissions and other restrictions are being followed. It can also check permissions not native to LND.
+
 ### Batched channel funding
 
 [Multiple channels can now be opened in a single
@@ -93,6 +99,16 @@ documentation](../psbt.md#use-the-batchopenchannel-rpc-for-safe-batch-channel-fu
 
 * [Publish transaction is now reachable through 
   lncli](https://github.com/lightningnetwork/lnd/pull/5460).
+
+* Prior to this release, when running on `simnet` or `regtest`, `lnd` would
+  skip the check on wallet synchronization during its startup. In doing so, the
+  integration test can bypass the rule set by `bitcoind`, which considers the
+  node is out of sync when the last block is older than 2 hours([more
+  discussion](https://github.com/lightningnetwork/lnd/pull/4685#discussion_r503080709)).
+  This synchronization check is put back now as we want to make the integration
+  test more robust in catching real world situations. This also means it might
+  take longer to start a `lnd` node when running in `simnet` or `regtest`,
+  something developers need to watch out from this release.
 
 ## Security 
 
@@ -135,6 +151,11 @@ you.
   tests](https://github.com/lightningnetwork/lnd/pull/5659) was addressed that
   lead to failed tests sometimes when the CPU of the GitHub CI runner was
   strained too much.
+
+* [Reduce the number of parallel itest runs to 2 on
+  ARM](https://github.com/lightningnetwork/lnd/pull/5731).
+
+* [Fix Travis itest parallelism](https://github.com/lightningnetwork/lnd/pull/5734)
 
 ## Documentation
 
@@ -209,6 +230,10 @@ you.
 
 * [Integration tests save embedded etcd logs to help debugging flakes](https://github.com/lightningnetwork/lnd/pull/5702)
 
+* [Fixed restore backup file test flake with bitcoind](https://github.com/lightningnetwork/lnd/pull/5637).
+
+* [Timing fix in AMP itest](https://github.com/lightningnetwork/lnd/pull/5725)
+
 ## Database
 
 * [Ensure single writer for legacy
@@ -267,6 +292,10 @@ mode](https://github.com/lightningnetwork/lnd/pull/5564).
 
 [A bug has been fixed when registering for spend notifications in the `txnotifier`. A re-org notification would previously not be dispatched in certain scenarios.](https://github.com/lightningnetwork/lnd/pull/5465)
 
+[Catches up on blocks in the router](https://github.com/lightningnetwork/lnd/pull/5315) in order to fix an "out of order" error that crops up.
+
+[Fix healthcheck might be running after the max number of attempts are reached.](https://github.com/lightningnetwork/lnd/pull/5686)
+
 ## Documentation 
 
 The [code contribution guidelines have been updated to mention the new
@@ -274,6 +303,7 @@ requirements surrounding updating the release notes for each new
 change](https://github.com/lightningnetwork/lnd/pull/5613). 
 
 # Contributors (Alphabetical Order)
+* Alyssa Hertig
 * Andras Banki-Horvath
 * de6df1re
 * ErikEk
