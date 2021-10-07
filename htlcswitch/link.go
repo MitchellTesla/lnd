@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"fmt"
-	"math"
 	prand "math/rand"
 	"sync"
 	"sync/atomic"
@@ -12,6 +11,7 @@ import (
 
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog"
+	"github.com/btcsuite/btcutil"
 	"github.com/davecgh/go-spew/spew"
 	"github.com/go-errors/errors"
 	"github.com/lightningnetwork/lnd/build"
@@ -301,6 +301,13 @@ type localUpdateAddMsg struct {
 	err chan error
 }
 
+// shutdownReq contains an error channel that will be used by the channelLink
+// to send an error if shutdown failed. If shutdown succeeded, the channel will
+// be closed.
+type shutdownReq struct {
+	err chan error
+}
+
 // channelLink is the service which drives a channel's commitment update
 // state-machine. In the event that an HTLC needs to be propagated to another
 // link, the forward handler from config is used which sends HTLC to the
@@ -369,6 +376,10 @@ type channelLink struct {
 	// sub-systems with the latest set of active HTLC's on our channel.
 	htlcUpdates chan *contractcourt.ContractUpdate
 
+	// shutdownRequest is a channel that the channelLink will listen on to
+	// service shutdown requests from ShutdownIfChannelClean calls.
+	shutdownRequest chan *shutdownReq
+
 	// updateFeeTimer is the timer responsible for updating the link's
 	// commitment fee every time it fires.
 	updateFeeTimer *time.Timer
@@ -414,12 +425,13 @@ func NewChannelLink(cfg ChannelLinkConfig,
 		channel:     channel,
 		shortChanID: channel.ShortChanID(),
 		// TODO(roasbeef): just do reserve here?
-		htlcUpdates:    make(chan *contractcourt.ContractUpdate),
-		hodlMap:        make(map[channeldb.CircuitKey]hodlHtlc),
-		hodlQueue:      queue.NewConcurrentQueue(10),
-		log:            build.NewPrefixLog(logPrefix, log),
-		quit:           make(chan struct{}),
-		localUpdateAdd: make(chan *localUpdateAddMsg),
+		htlcUpdates:     make(chan *contractcourt.ContractUpdate),
+		shutdownRequest: make(chan *shutdownReq),
+		hodlMap:         make(map[channeldb.CircuitKey]hodlHtlc),
+		hodlQueue:       queue.NewConcurrentQueue(10),
+		log:             build.NewPrefixLog(logPrefix, log),
+		quit:            make(chan struct{}),
+		localUpdateAdd:  make(chan *localUpdateAddMsg),
 	}
 }
 
@@ -606,9 +618,18 @@ func (l *channelLink) sampleNetworkFee() (chainfee.SatPerKWeight, error) {
 
 // shouldAdjustCommitFee returns true if we should update our commitment fee to
 // match that of the network fee. We'll only update our commitment fee if the
-// network fee is +/- 10% to our network fee.
-func shouldAdjustCommitFee(netFee, chanFee chainfee.SatPerKWeight) bool {
+// network fee is +/- 10% to our commitment fee or if our current commitment
+// fee is below the minimum relay fee.
+func shouldAdjustCommitFee(netFee, chanFee,
+	minRelayFee chainfee.SatPerKWeight) bool {
+
 	switch {
+	// If the network fee is greater than our current commitment fee and
+	// our current commitment fee is below the minimum relay fee then
+	// we should switch to it no matter if it is less than a 10% increase.
+	case netFee > chanFee && chanFee < minRelayFee:
+		return true
+
 	// If the network fee is greater than the commitment fee, then we'll
 	// switch to it if it's at least 10% greater than the commit fee.
 	case netFee > chanFee && netFee >= (chanFee+(chanFee*10)/100):
@@ -1093,18 +1114,22 @@ func (l *channelLink) htlcManager() {
 				continue
 			}
 
-			// We'll check to see if we should update the fee rate
-			// based on our current set fee rate. We'll cap the new
-			// fee rate to our max fee allocation.
-			commitFee := l.channel.CommitFeeRate()
-			maxFee := l.channel.MaxFeeRate(
-				l.cfg.MaxFeeAllocation,
+			minRelayFee := l.cfg.FeeEstimator.RelayFeePerKW()
+
+			newCommitFee := l.channel.IdealCommitFeeRate(
+				netFee, minRelayFee,
 				l.cfg.MaxAnchorsCommitFeeRate,
+				l.cfg.MaxFeeAllocation,
 			)
-			newCommitFee := chainfee.SatPerKWeight(
-				math.Min(float64(netFee), float64(maxFee)),
-			)
-			if !shouldAdjustCommitFee(newCommitFee, commitFee) {
+
+			// We determine if we should adjust the commitment fee
+			// based on the current commitment fee, the suggested
+			// new commitment fee and the current minimum relay fee
+			// rate.
+			commitFee := l.channel.CommitFeeRate()
+			if !shouldAdjustCommitFee(
+				newCommitFee, commitFee, minRelayFee,
+			) {
 				continue
 			}
 
@@ -1175,6 +1200,20 @@ func (l *channelLink) htlcManager() {
 				)
 				return
 			}
+
+		case req := <-l.shutdownRequest:
+			// If the channel is clean, we send nil on the err chan
+			// and return to prevent the htlcManager goroutine from
+			// processing any more updates. The full link shutdown
+			// will be triggered by RemoveLink in the peer.
+			if l.channel.IsChannelClean() {
+				req.err <- nil
+				return
+			}
+
+			// Otherwise, the channel has lingering updates, send
+			// an error and continue.
+			req.err <- ErrLinkFailedShutdown
 
 		case <-l.quit:
 			return
@@ -1903,6 +1942,10 @@ func (l *channelLink) handleUpstreamMsg(msg lnwire.Message) {
 				"error receiving fee update: %v", err)
 			return
 		}
+
+		// Update the mailbox's feerate as well.
+		l.mailBox.SetFeeRate(fee)
+
 	case *lnwire.Error:
 		// Error received from remote, MUST fail channel, but should
 		// only print the contents of the error message if all
@@ -2166,6 +2209,64 @@ func (l *channelLink) MayAddOutgoingHtlc() error {
 	return l.channel.MayAddOutgoingHtlc()
 }
 
+// getDustSum is a wrapper method that calls the underlying channel's dust sum
+// method.
+//
+// NOTE: Part of the dustHandler interface.
+func (l *channelLink) getDustSum(remote bool) lnwire.MilliSatoshi {
+	return l.channel.GetDustSum(remote)
+}
+
+// getFeeRate is a wrapper method that retrieves the underlying channel's
+// feerate.
+//
+// NOTE: Part of the dustHandler interface.
+func (l *channelLink) getFeeRate() chainfee.SatPerKWeight {
+	return l.channel.CommitFeeRate()
+}
+
+// getDustClosure returns a closure that can be used by the switch or mailbox
+// to evaluate whether a given HTLC is dust.
+//
+// NOTE: Part of the dustHandler interface.
+func (l *channelLink) getDustClosure() dustClosure {
+	localDustLimit := l.channel.State().LocalChanCfg.DustLimit
+	remoteDustLimit := l.channel.State().RemoteChanCfg.DustLimit
+	chanType := l.channel.State().ChanType
+
+	return dustHelper(chanType, localDustLimit, remoteDustLimit)
+}
+
+// dustClosure is a function that evaluates whether an HTLC is dust. It returns
+// true if the HTLC is dust. It takes in a feerate, a boolean denoting whether
+// the HTLC is incoming (i.e. one that the remote sent), a boolean denoting
+// whether to evaluate on the local or remote commit, and finally an HTLC
+// amount to test.
+type dustClosure func(chainfee.SatPerKWeight, bool, bool, btcutil.Amount) bool
+
+// dustHelper is used to construct the dustClosure.
+func dustHelper(chantype channeldb.ChannelType, localDustLimit,
+	remoteDustLimit btcutil.Amount) dustClosure {
+
+	isDust := func(feerate chainfee.SatPerKWeight, incoming,
+		localCommit bool, amt btcutil.Amount) bool {
+
+		if localCommit {
+			return lnwallet.HtlcIsDust(
+				chantype, incoming, true, feerate, amt,
+				localDustLimit,
+			)
+		}
+
+		return lnwallet.HtlcIsDust(
+			chantype, incoming, false, feerate, amt,
+			remoteDustLimit,
+		)
+	}
+
+	return isDust
+}
+
 // AttachMailBox updates the current mailbox used by this link, and hooks up
 // the mailbox's message and packet outboxes to the link's upstream and
 // downstream chans, respectively.
@@ -2175,6 +2276,14 @@ func (l *channelLink) AttachMailBox(mailbox MailBox) {
 	l.upstream = mailbox.MessageOutBox()
 	l.downstream = mailbox.PacketOutBox()
 	l.Unlock()
+
+	// Set the mailbox's fee rate. This may be refreshing a feerate that was
+	// never committed.
+	l.mailBox.SetFeeRate(l.getFeeRate())
+
+	// Also set the mailbox's dust closure so that it can query whether HTLC's
+	// are dust given the current feerate.
+	l.mailBox.SetDustClosure(l.getDustClosure())
 }
 
 // UpdateForwardingPolicy updates the forwarding policy for the target
@@ -2434,6 +2543,29 @@ func (l *channelLink) HandleChannelUpdate(message lnwire.Message) {
 	l.mailBox.AddMessage(message)
 }
 
+// ShutdownIfChannelClean triggers a link shutdown if the channel is in a clean
+// state and errors if the channel has lingering updates.
+//
+// NOTE: Part of the ChannelUpdateHandler interface.
+func (l *channelLink) ShutdownIfChannelClean() error {
+	errChan := make(chan error, 1)
+
+	select {
+	case l.shutdownRequest <- &shutdownReq{
+		err: errChan,
+	}:
+	case <-l.quit:
+		return ErrLinkShuttingDown
+	}
+
+	select {
+	case err := <-errChan:
+		return err
+	case <-l.quit:
+		return ErrLinkShuttingDown
+	}
+}
+
 // updateChannelFee updates the commitment fee-per-kw on this channel by
 // committing to an update_fee message.
 func (l *channelLink) updateChannelFee(feePerKw chainfee.SatPerKWeight) error {
@@ -2451,6 +2583,10 @@ func (l *channelLink) updateChannelFee(feePerKw chainfee.SatPerKWeight) error {
 	if err := l.channel.UpdateFee(feePerKw); err != nil {
 		return err
 	}
+
+	// The fee passed the channel's validation checks, so we update the
+	// mailbox feerate.
+	l.mailBox.SetFeeRate(feePerKw)
 
 	// We'll then attempt to send a new UpdateFee message, and also lock it
 	// in immediately by triggering a commitment update.

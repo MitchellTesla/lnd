@@ -185,7 +185,7 @@ type Config struct {
 	InterceptSwitch *htlcswitch.InterceptableSwitch
 
 	// ChannelDB is used to fetch opened channels, and closed channels.
-	ChannelDB *channeldb.DB
+	ChannelDB *channeldb.ChannelStateDB
 
 	// ChannelGraph is a pointer to the channel graph which is used to
 	// query information about the set of known active channels.
@@ -1184,11 +1184,9 @@ func waitUntilLinkActive(p *Brontide,
 
 	// The link may already be active by this point, and we may have missed the
 	// ActiveLinkEvent. Check if the link exists.
-	links, _ := p.cfg.Switch.GetLinksByInterface(p.cfg.PubKeyBytes)
-	for _, link := range links {
-		if link.ChanID() == cid {
-			return link
-		}
+	link := p.fetchLinkFromKeyAndCid(cid)
+	if link != nil {
+		return link
 	}
 
 	// If the link is nil, we must wait for it to be active.
@@ -1216,16 +1214,7 @@ func waitUntilLinkActive(p *Brontide,
 			// The link shouldn't be nil as we received an
 			// ActiveLinkEvent. If it is nil, we return nil and the
 			// calling function should catch it.
-			links, _ = p.cfg.Switch.GetLinksByInterface(
-				p.cfg.PubKeyBytes,
-			)
-			for _, link := range links {
-				if link.ChanID() == cid {
-					return link
-				}
-			}
-
-			return nil
+			return p.fetchLinkFromKeyAndCid(cid)
 
 		case <-p.quit:
 			return nil
@@ -2409,12 +2398,11 @@ func (p *Brontide) fetchActiveChanCloser(chanID lnwire.ChannelID) (
 	// cooperative channel closure.
 	chanCloser, ok := p.activeChanCloses[chanID]
 	if !ok {
-		// If we need to create a chan closer for the first time, then
-		// we'll check to ensure that the channel is even in the proper
-		// state to allow a co-op channel closure.
-		if len(channel.ActiveHtlcs()) != 0 {
-			return nil, fmt.Errorf("cannot co-op close " +
-				"channel w/ active htlcs")
+		// Optimistically try a link shutdown, erroring out if it
+		// failed.
+		if err := p.tryLinkShutdown(chanID); err != nil {
+			peerLog.Errorf("failed link shutdown: %v", err)
+			return nil, err
 		}
 
 		// We'll create a valid closing state machine in order to
@@ -2454,9 +2442,8 @@ func (p *Brontide) fetchActiveChanCloser(chanID lnwire.ChannelID) (
 
 		chanCloser = chancloser.NewChanCloser(
 			chancloser.ChanCloseCfg{
-				Channel:           channel,
-				UnregisterChannel: p.cfg.Switch.RemoveLink,
-				BroadcastTx:       p.cfg.Wallet.PublishTransaction,
+				Channel:     channel,
+				BroadcastTx: p.cfg.Wallet.PublishTransaction,
 				DisableChannel: func(chanPoint wire.OutPoint) error {
 					return p.cfg.ChanStatusMgr.RequestDisable(chanPoint, false)
 				},
@@ -2532,7 +2519,7 @@ func (p *Brontide) handleLocalCloseReq(req *htlcswitch.ChanClose) {
 	// A type of CloseRegular indicates that the user has opted to close
 	// out this channel on-chain, so we execute the cooperative channel
 	// closure workflow.
-	case htlcswitch.CloseRegular:
+	case contractcourt.CloseRegular:
 		// First, we'll choose a delivery address that we'll use to send the
 		// funds to in the case of a successful negotiation.
 
@@ -2570,11 +2557,18 @@ func (p *Brontide) handleLocalCloseReq(req *htlcswitch.ChanClose) {
 			return
 		}
 
+		// Optimistically try a link shutdown, erroring out if it
+		// failed.
+		if err := p.tryLinkShutdown(chanID); err != nil {
+			peerLog.Errorf("failed link shutdown: %v", err)
+			req.Err <- err
+			return
+		}
+
 		chanCloser := chancloser.NewChanCloser(
 			chancloser.ChanCloseCfg{
-				Channel:           channel,
-				UnregisterChannel: p.cfg.Switch.RemoveLink,
-				BroadcastTx:       p.cfg.Wallet.PublishTransaction,
+				Channel:     channel,
+				BroadcastTx: p.cfg.Wallet.PublishTransaction,
 				DisableChannel: func(chanPoint wire.OutPoint) error {
 					return p.cfg.ChanStatusMgr.RequestDisable(chanPoint, false)
 				},
@@ -2610,7 +2604,7 @@ func (p *Brontide) handleLocalCloseReq(req *htlcswitch.ChanClose) {
 
 	// A type of CloseBreach indicates that the counterparty has breached
 	// the channel therefore we need to clean up our local state.
-	case htlcswitch.CloseBreach:
+	case contractcourt.CloseBreach:
 		// TODO(roasbeef): no longer need with newer beach logic?
 		peerLog.Infof("ChannelPoint(%v) has been breached, wiping "+
 			"channel", req.ChanPoint)
@@ -2699,6 +2693,55 @@ func (p *Brontide) handleLinkFailure(failure linkFailureReport) {
 				"remote peer: %v", err)
 		}
 	}
+}
+
+// tryLinkShutdown attempts to fetch a target link from the switch, calls
+// ShutdownIfChannelClean to optimistically trigger a link shutdown, and
+// removes the link from the switch. It returns an error if any step failed.
+func (p *Brontide) tryLinkShutdown(cid lnwire.ChannelID) error {
+	// Fetch the appropriate link and call ShutdownIfChannelClean to ensure
+	// no other updates can occur.
+	chanLink := p.fetchLinkFromKeyAndCid(cid)
+
+	// If the link happens to be nil, return ErrChannelNotFound so we can
+	// ignore the close message.
+	if chanLink == nil {
+		return ErrChannelNotFound
+	}
+
+	// Else, the link exists, so attempt to trigger shutdown. If this
+	// fails, we'll send an error message to the remote peer.
+	if err := chanLink.ShutdownIfChannelClean(); err != nil {
+		return err
+	}
+
+	// Next, we remove the link from the switch to shut down all of the
+	// link's goroutines and remove it from the switch's internal maps. We
+	// don't call WipeChannel as the channel must still be in the
+	// activeChannels map to process coop close messages.
+	p.cfg.Switch.RemoveLink(cid)
+
+	return nil
+}
+
+// fetchLinkFromKeyAndCid fetches a link from the switch via the remote's
+// public key and the channel id.
+func (p *Brontide) fetchLinkFromKeyAndCid(
+	cid lnwire.ChannelID) htlcswitch.ChannelUpdateHandler {
+
+	var chanLink htlcswitch.ChannelUpdateHandler
+
+	// We don't need to check the error here, and can instead just loop
+	// over the slice and return nil.
+	links, _ := p.cfg.Switch.GetLinksByInterface(p.cfg.PubKeyBytes)
+	for _, link := range links {
+		if link.ChanID() == cid {
+			chanLink = link
+			break
+		}
+	}
+
+	return chanLink
 }
 
 // finalizeChanClosure performs the final clean up steps once the cooperative

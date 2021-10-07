@@ -16,6 +16,7 @@ import (
 	"github.com/davecgh/go-spew/spew"
 	"github.com/lightningnetwork/lnd/chainreg"
 	"github.com/lightningnetwork/lnd/funding"
+	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/lncfg"
 	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/routerrpc"
@@ -48,7 +49,7 @@ func testDisconnectingTargetPeer(net *lntest.NetworkHarness, t *harnessTest) {
 	net.ConnectNodes(t.t, alice, bob)
 
 	// Check existing connection.
-	assertNumConnections(t, alice, bob, 1)
+	assertConnected(t, alice, bob)
 
 	// Give Alice some coins so she can fund a channel.
 	net.SendCoins(t.t, btcutil.SatoshiPerBitcoin, alice)
@@ -81,7 +82,7 @@ func testDisconnectingTargetPeer(net *lntest.NetworkHarness, t *harnessTest) {
 	time.Sleep(time.Millisecond * 300)
 
 	// Assert that the connection was torn down.
-	assertNumConnections(t, alice, bob, 0)
+	assertNotConnected(t, alice, bob)
 
 	fundingTxID, err := chainhash.NewHash(pendingUpdate.Txid)
 	if err != nil {
@@ -127,7 +128,7 @@ func testDisconnectingTargetPeer(net *lntest.NetworkHarness, t *harnessTest) {
 	}
 
 	// Check existing connection.
-	assertNumConnections(t, alice, bob, 0)
+	assertNotConnected(t, alice, bob)
 
 	// Reconnect both nodes before force closing the channel.
 	net.ConnectNodes(t.t, alice, bob)
@@ -151,14 +152,14 @@ func testDisconnectingTargetPeer(net *lntest.NetworkHarness, t *harnessTest) {
 			err)
 	}
 
-	// Check zero peer connections.
-	assertNumConnections(t, alice, bob, 0)
+	// Check that the nodes not connected.
+	assertNotConnected(t, alice, bob)
 
 	// Finally, re-connect both nodes.
 	net.ConnectNodes(t.t, alice, bob)
 
 	// Check existing connection.
-	assertNumConnections(t, alice, net.Bob, 1)
+	assertConnected(t, alice, bob)
 
 	// Cleanup by mining the force close and sweep transaction.
 	cleanupForceClose(t, net, alice, chanPoint)
@@ -417,12 +418,15 @@ func testListChannels(net *lntest.NetworkHarness, t *harnessTest) {
 	// Check the returned response is correct.
 	aliceChannel := resp.Channels[0]
 
+	// Calculate the dust limit we'll use for the test.
+	dustLimit := lnwallet.DustLimitForSize(input.UnknownWitnessSize)
+
 	// defaultConstraints is a ChannelConstraints with default values. It is
 	// used to test against Alice's local channel constraints.
 	defaultConstraints := &lnrpc.ChannelConstraints{
 		CsvDelay:          4,
 		ChanReserveSat:    1000,
-		DustLimitSat:      uint64(lnwallet.DefaultDustLimit()),
+		DustLimitSat:      uint64(dustLimit),
 		MaxPendingAmtMsat: 99000000,
 		MinHtlcMsat:       1,
 		MaxAcceptedHtlcs:  bobRemoteMaxHtlcs,
@@ -438,7 +442,7 @@ func testListChannels(net *lntest.NetworkHarness, t *harnessTest) {
 	customizedConstraints := &lnrpc.ChannelConstraints{
 		CsvDelay:          4,
 		ChanReserveSat:    1000,
-		DustLimitSat:      uint64(lnwallet.DefaultDustLimit()),
+		DustLimitSat:      uint64(dustLimit),
 		MaxPendingAmtMsat: 99000000,
 		MinHtlcMsat:       customizedMinHtlc,
 		MaxAcceptedHtlcs:  aliceRemoteMaxHtlcs,
@@ -926,6 +930,10 @@ func testDataLossProtection(net *lntest.NetworkHarness, t *harnessTest) {
 		if err := net.BackupDb(node); err != nil {
 			t.Fatalf("unable to copy database files: %v", err)
 		}
+
+		// Reconnect the peers after the restart that was needed for the db
+		// backup.
+		net.EnsureConnected(t.t, carol, node)
 
 		// Finally, send more payments from , using the remaining
 		// payment hashes.

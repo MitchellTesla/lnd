@@ -37,6 +37,7 @@ import (
 	"github.com/lightningnetwork/lnd/peernotifier"
 	"github.com/lightningnetwork/lnd/routing"
 	"github.com/lightningnetwork/lnd/routing/localchans"
+	"github.com/lightningnetwork/lnd/rpcperms"
 	"github.com/lightningnetwork/lnd/signal"
 	"github.com/lightningnetwork/lnd/sweep"
 	"github.com/lightningnetwork/lnd/watchtower"
@@ -80,8 +81,6 @@ var (
 	ltndLog = addLndPkgLogger("LTND")
 	rpcsLog = addLndPkgLogger("RPCS")
 	srvrLog = addLndPkgLogger("SRVR")
-	utxnLog = addLndPkgLogger("UTXN")
-	brarLog = addLndPkgLogger("BRAR")
 	atplLog = addLndPkgLogger("ATPL")
 )
 
@@ -131,6 +130,8 @@ func SetupLoggers(root *build.RotatingLogWriter, interceptor signal.Interceptor)
 	AddSubLogger(root, "CMGR", interceptor, connmgr.UseLogger)
 	AddSubLogger(root, "BTCN", interceptor, neutrino.UseLogger)
 	AddSubLogger(root, "CNCT", interceptor, contractcourt.UseLogger)
+	AddSubLogger(root, "UTXN", interceptor, contractcourt.UseNurseryLogger)
+	AddSubLogger(root, "BRAR", interceptor, contractcourt.UseBreachLogger)
 	AddSubLogger(root, "SPHX", interceptor, sphinx.UseLogger)
 	AddSubLogger(root, "SWPR", interceptor, sweep.UseLogger)
 	AddSubLogger(root, "SGNR", interceptor, signrpc.UseLogger)
@@ -159,6 +160,7 @@ func SetupLoggers(root *build.RotatingLogWriter, interceptor signal.Interceptor)
 	AddSubLogger(root, chanacceptor.Subsystem, interceptor, chanacceptor.UseLogger)
 	AddSubLogger(root, funding.Subsystem, interceptor, funding.UseLogger)
 	AddSubLogger(root, cluster.Subsystem, interceptor, cluster.UseLogger)
+	AddSubLogger(root, rpcperms.Subsystem, interceptor, rpcperms.UseLogger)
 }
 
 // AddSubLogger is a helper method to conveniently create and register the

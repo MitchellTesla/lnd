@@ -272,6 +272,20 @@ type addSingleFunderSigsMsg struct {
 	err chan error
 }
 
+// CheckReservedValueTxReq is the request struct used to call
+// CheckReservedValueTx with. It contains the transaction to check as well as
+// an optional explicitly defined index to denote a change output that is not
+// watched by the wallet.
+type CheckReservedValueTxReq struct {
+	// Tx is the transaction to check the outputs for.
+	Tx *wire.MsgTx
+
+	// ChangeIndex denotes an optional output index that can be explicitly
+	// set for a change that is not being watched by the wallet and would
+	// otherwise not be recognized as a change output.
+	ChangeIndex *int
+}
+
 // LightningWallet is a domain specific, yet general Bitcoin wallet capable of
 // executing workflow required to interact with the Lightning Network. It is
 // domain specific in the sense that it understands all the fancy scripts used
@@ -559,7 +573,7 @@ func (l *LightningWallet) RegisterFundingIntent(expectedID [32]byte,
 // pending channel ID and tries to advance the state machine by verifying the
 // passed PSBT.
 func (l *LightningWallet) PsbtFundingVerify(pendingChanID [32]byte,
-	packet *psbt.Packet) error {
+	packet *psbt.Packet, skipFinalize bool) error {
 
 	l.intentMtx.Lock()
 	defer l.intentMtx.Unlock()
@@ -573,7 +587,13 @@ func (l *LightningWallet) PsbtFundingVerify(pendingChanID [32]byte,
 	if !ok {
 		return fmt.Errorf("incompatible funding intent")
 	}
-	err := psbtIntent.Verify(packet)
+
+	if skipFinalize && psbtIntent.ShouldPublishFundingTX() {
+		return fmt.Errorf("cannot set skip_finalize for channel that " +
+			"did not set no_publish")
+	}
+
+	err := psbtIntent.Verify(packet, skipFinalize)
 	if err != nil {
 		return fmt.Errorf("error verifying PSBT: %v", err)
 	}
@@ -689,12 +709,15 @@ func (l *LightningWallet) handleFundingReserveRequest(req *InitFundingReserveMsg
 	// If no chanFunder was provided, then we'll assume the default
 	// assembler, which is backed by the wallet's internal coin selection.
 	if req.ChanFunder == nil {
+		// We use the P2WSH dust limit since it is larger than the
+		// P2WPKH dust limit and to avoid threading through two
+		// different dust limits.
 		cfg := chanfunding.WalletConfig{
 			CoinSource:       &CoinSource{l},
 			CoinSelectLocker: l,
 			CoinLocker:       l,
 			Signer:           l.Cfg.Signer,
-			DustLimit:        DefaultDustLimit(),
+			DustLimit:        DustLimitForSize(input.P2WSHSize),
 		}
 		req.ChanFunder = chanfunding.NewWalletAssembler(cfg)
 	}
@@ -1033,8 +1056,8 @@ func (l *LightningWallet) CheckReservedValue(in []wire.OutPoint,
 // database.
 //
 // NOTE: This method should only be run with the CoinSelectLock held.
-func (l *LightningWallet) CheckReservedValueTx(tx *wire.MsgTx) (btcutil.Amount,
-	error) {
+func (l *LightningWallet) CheckReservedValueTx(req CheckReservedValueTxReq) (
+	btcutil.Amount, error) {
 
 	numAnchors, err := l.currentNumAnchorChans()
 	if err != nil {
@@ -1042,11 +1065,44 @@ func (l *LightningWallet) CheckReservedValueTx(tx *wire.MsgTx) (btcutil.Amount,
 	}
 
 	var inputs []wire.OutPoint
-	for _, txIn := range tx.TxIn {
+	for _, txIn := range req.Tx.TxIn {
 		inputs = append(inputs, txIn.PreviousOutPoint)
 	}
 
-	return l.CheckReservedValue(inputs, tx.TxOut, numAnchors)
+	reservedVal, err := l.CheckReservedValue(
+		inputs, req.Tx.TxOut, numAnchors,
+	)
+	switch {
+
+	// If the error returned from CheckReservedValue is
+	// ErrReservedValueInvalidated, then it did nonetheless return
+	// the required reserved value and we check for the optional
+	// change index.
+	case errors.Is(err, ErrReservedValueInvalidated):
+		// Without a change index provided there is nothing more to
+		// check and the error is returned.
+		if req.ChangeIndex == nil {
+			return reservedVal, err
+		}
+
+		// If a change index was provided we make only sure that it
+		// would leave sufficient funds for the reserved balance value.
+		//
+		// Note: This is used if a change output index is explicitly set
+		// but that may not be watched by the wallet and therefore is
+		// not picked up by the call to CheckReservedValue above.
+		chIdx := *req.ChangeIndex
+		if chIdx < 0 || chIdx >= len(req.Tx.TxOut) ||
+			req.Tx.TxOut[chIdx].Value < int64(reservedVal) {
+
+			return reservedVal, err
+		}
+
+	case err != nil:
+		return reservedVal, err
+	}
+
+	return reservedVal, nil
 }
 
 // initOurContribution initializes the given ChannelReservation with our coins
@@ -1263,6 +1319,13 @@ func (l *LightningWallet) handleContributionMsg(req *addContributionMsg) {
 	theirContribution := req.contribution
 	ourContribution := pendingReservation.ourContribution
 
+	// Perform bounds-checking on both ChannelReserve and DustLimit
+	// parameters.
+	if !pendingReservation.validateReserveBounds() {
+		req.err <- fmt.Errorf("invalid reserve and dust bounds")
+		return
+	}
+
 	var (
 		chanPoint *wire.OutPoint
 		err       error
@@ -1397,9 +1460,11 @@ func (l *LightningWallet) handleChanPointReady(req *continueContributionMsg) {
 	// is needed to construct and publish the full funding transaction.
 	intent := pendingReservation.fundingIntent
 	if psbtIntent, ok := intent.(*chanfunding.PsbtIntent); ok {
-		// With our keys bound, we can now construct+sign the final
-		// funding transaction and also obtain the chanPoint that
-		// creates the channel.
+		// With our keys bound, we can now construct and possibly sign
+		// the final funding transaction and also obtain the chanPoint
+		// that creates the channel. We _have_ to call CompileFundingTx
+		// even if we don't publish ourselves as that sets the actual
+		// funding outpoint in stone for this channel.
 		fundingTx, err := psbtIntent.CompileFundingTx()
 		if err != nil {
 			req.err <- fmt.Errorf("unable to construct funding "+
@@ -1413,23 +1478,26 @@ func (l *LightningWallet) handleChanPointReady(req *continueContributionMsg) {
 			return
 		}
 
-		// Finally, we'll populate the relevant information in our
-		// pendingReservation so the rest of the funding flow can
-		// continue as normal.
-		pendingReservation.fundingTx = fundingTx
 		pendingReservation.partialState.FundingOutpoint = *chanPointPtr
 		chanPoint = *chanPointPtr
-		pendingReservation.ourFundingInputScripts = make(
-			[]*input.Script, 0, len(ourContribution.Inputs),
-		)
-		for _, txIn := range fundingTx.TxIn {
-			pendingReservation.ourFundingInputScripts = append(
-				pendingReservation.ourFundingInputScripts,
-				&input.Script{
-					Witness:   txIn.Witness,
-					SigScript: txIn.SignatureScript,
-				},
+
+		// Finally, we'll populate the relevant information in our
+		// pendingReservation so the rest of the funding flow can
+		// continue as normal in case we are going to publish ourselves.
+		if psbtIntent.ShouldPublishFundingTX() {
+			pendingReservation.fundingTx = fundingTx
+			pendingReservation.ourFundingInputScripts = make(
+				[]*input.Script, 0, len(ourContribution.Inputs),
 			)
+			for _, txIn := range fundingTx.TxIn {
+				pendingReservation.ourFundingInputScripts = append(
+					pendingReservation.ourFundingInputScripts,
+					&input.Script{
+						Witness:   txIn.Witness,
+						SigScript: txIn.SignatureScript,
+					},
+				)
+			}
 		}
 	}
 
@@ -1561,9 +1629,6 @@ func (l *LightningWallet) handleSingleContribution(req *addSingleContributionMsg
 	pendingReservation.Lock()
 	defer pendingReservation.Unlock()
 
-	// TODO(roasbeef): verify sanity of remote party's parameters, fail if
-	// disagree
-
 	// Validate that the remote's UpfrontShutdownScript is a valid script
 	// if it's set.
 	shutdown := req.contribution.UpfrontShutdown
@@ -1580,6 +1645,14 @@ func (l *LightningWallet) handleSingleContribution(req *addSingleContributionMsg
 	pendingReservation.theirContribution = req.contribution
 	theirContribution := pendingReservation.theirContribution
 	chanState := pendingReservation.partialState
+
+	// Perform bounds checking on both ChannelReserve and DustLimit
+	// parameters. The ChannelReserve may have been changed by the
+	// ChannelAcceptor RPC, so this is necessary.
+	if !pendingReservation.validateReserveBounds() {
+		req.err <- fmt.Errorf("invalid reserve and dust bounds")
+		return
+	}
 
 	// Initialize an empty sha-chain for them, tracking the current pending
 	// revocation hash (we don't yet know the preimage so we can't add it

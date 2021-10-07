@@ -44,7 +44,8 @@ var (
 	)
 
 	// dbBackendFlag specifies the backend to use
-	dbBackendFlag = flag.String("dbbackend", "bbolt", "Database backend (bbolt, etcd)")
+	dbBackendFlag = flag.String("dbbackend", "bbolt", "Database backend "+
+		"(bbolt, etcd, postgres)")
 )
 
 // getTestCaseSplitTranche returns the sub slice of the test cases that should
@@ -153,6 +154,9 @@ func TestLightningNetworkDaemon(t *testing.T) {
 	case "etcd":
 		dbBackend = lntest.BackendEtcd
 
+	case "postgres":
+		dbBackend = lntest.BackendPostgres
+
 	default:
 		require.Fail(t, "unknown db backend")
 	}
@@ -199,6 +203,7 @@ func TestLightningNetworkDaemon(t *testing.T) {
 	// TODO(roasbeef): create master balanced channel with all the monies?
 	aliceBobArgs := []string{
 		"--default-remote-max-htlcs=483",
+		"--dust-threshold=5000000",
 	}
 
 	// Run the subset of the test cases selected in this tranche.

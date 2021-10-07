@@ -38,6 +38,39 @@ instantaneous. Read the [guide on leader
 election](https://github.com/lightningnetwork/lnd/blob/master/docs/leader_election.md)
 for more information.
 
+### Postgres database support
+
+This release adds [support for Postgres as a database
+backend](https://github.com/lightningnetwork/lnd/pull/5366) to lnd. Postgres
+has several advantages over the default bbolt backend:
+* Better handling of large data sets.
+* On-the-fly database compaction (auto vacuum).
+* Database replication.
+* Inspect data while lnd is running (bbolt opens the database exclusively).
+* Usage of industry-standard tools to manage the stored data, get performance
+  metrics, etc.
+
+Furthermore, the SQL platform opens up possibilities to improve lnd's
+performance in the future. Bbolt's single-writer model is a severe performance
+bottleneck, whereas Postgres offers a variety of locking models. Additionally,
+structured tables reduce the need for custom serialization/deserialization code
+in `lnd`, saving developer time and limiting the potential for bugs.
+
+Instructions for enabling Postgres can be found in
+[docs/postgres.md](../postgres.md).
+
+### In-memory path finding
+
+Finding a path through the channel graph for sending a payment doesn't involve
+any database queries anymore. The [channel graph is now kept fully
+in-memory](https://github.com/lightningnetwork/lnd/pull/5642) for up a massive
+performance boost when calling `QueryRoutes` or any of the `SendPayment`
+variants. Keeping the full graph in memory naturally comes with increased RAM
+usage. Users running `lnd` on low-memory systems are advised to run with the
+`routing.strictgraphpruning=true` configuration option that more aggressively
+removes zombie channels from the graph, reducing the number of channels that
+need to be kept in memory.
+
 ## Protocol Extensions
 
 ### Explicit Channel Negotiation
@@ -79,6 +112,24 @@ proposed channel type is used.
 
 * [Adds an option to the BakeMacaroon rpc "allow-external-permissions,"](https://github.com/lightningnetwork/lnd/pull/5304) which makes it possible to bake a macaroon with external permissions. That way, the baked macaroons can be used for services beyond LND. Also adds a new CheckMacaroonPermissions rpc that checks that the macaroon permissions and other restrictions are being followed. It can also check permissions not native to LND.
 
+* [A new RPC middleware
+  interceptor](https://github.com/lightningnetwork/lnd/pull/5101) was added that
+  allows external tools to hook into `lnd`'s RPC server and intercept any
+  requests made with custom macaroons (and also the responses to those
+  requests).
+  
+* [Adds NOT_FOUND status code for LookupInvoice](https://github.com/lightningnetwork/lnd/pull/5768)
+
+* The `FundingPsbtFinalize` step is a safety measure that assures the final
+  signed funding transaction has the same TXID as was registered during
+  the funding flow and was used for the commitment transactions.
+  This step is cumbersome to use if the whole funding process is completed
+  external to lnd. [We allow the finalize step to be
+  skipped](https://github.com/lightningnetwork/lnd/pull/5363) for such cases.
+  The API user/script will need to make sure things are verified (and possibly
+  cleaned up) properly. An example script was added to the [PSBT
+  documentation](../psbt.md) to show the simplified process.
+
 ### Batched channel funding
 
 [Multiple channels can now be opened in a single
@@ -115,6 +166,13 @@ documentation](../psbt.md#use-the-batchopenchannel-rpc-for-safe-batch-channel-fu
 
 ## Security 
 
+* The release signature verification script [was overhauled to fix some possible
+  attack vectors and user
+  errors](https://github.com/lightningnetwork/lnd/pull/5053). The public keys
+  used to verify the signatures against are no longer downloaded form Keybase
+  but instead are kept in the `lnd` git repository. This allows for a more
+  transparent way of keeping track of changes to the signing keys.
+
 ### Admin macaroon permissions
 
 The default file permissions of admin.macaroon were [changed from 0600 to
@@ -130,6 +188,8 @@ you.
 
 * Locally force closed channels are now [kept in the channel.backup file until
   their time lock has fully matured](https://github.com/lightningnetwork/lnd/pull/5528).
+
+* [Cooperative closes optimistically shutdown the associated `link` before closing the channel.](https://github.com/lightningnetwork/lnd/pull/5618)
 
 ## Build System
 
@@ -160,6 +220,13 @@ you.
 
 * [Fix Travis itest parallelism](https://github.com/lightningnetwork/lnd/pull/5734)
 
+* [All CI, containers, and automated release artifact building now all use Go
+  1.17.1](https://github.com/lightningnetwork/lnd/pull/5650). All build tags have
+  been updated accordingly to comply with the new Go 1.17.1 requirements.
+
+* [All integration tests (except the ARM itests) were moved from Travis CI to
+  GitHub Actions](https://github.com/lightningnetwork/lnd/pull/5811).
+
 ## Documentation
 
 * [Outdated warning about unsupported pruning was replaced with clarification that LND **does**
@@ -170,6 +237,11 @@ you.
    funds already reserved for potential future anchor channel closings (via
    CPFP) and that more information (e.g., specific sat amounts) can be found
    in the debug logs.
+
+* [Updated C# grpc docs to use Grpc.Net.Client](https://github.com/lightningnetwork/lnd/pull/5766).
+  The Grpc.Core NuGet package is in maintenance mode. Grpc.Net.Client is now the 
+  [recommended](https://github.com/grpc/grpc-dotnet#grpc-for-net-is-now-the-recommended-implementation)
+  implementation.
 
 ## Misc
 
@@ -182,11 +254,22 @@ you.
   with the `addInvoice` rpc interface. However, now the function has been
   [exposed in the go package `invoicesrpc`](https://github.com/lightningnetwork/lnd/pull/5697).
 
+* The `DeleteAllPayments` and `DeletePayment` RPC methods can now be called from
+  the command line with the [new 
+  `lncli deletepayments`](https://github.com/lightningnetwork/lnd/pull/5699)
+  command.
+
+* [Add more verbose error printed to
+  console](https://github.com/lightningnetwork/lnd/pull/5802) when `lnd` fails
+  loading the user specified config.
+
 ## Code Health
 
 ### Code cleanup, refactor, typo fixes
 
 * [Refactor the interaction between the `htlcswitch` and `peer` packages for cleaner separation.](https://github.com/lightningnetwork/lnd/pull/5603)
+
+* [Moved the original breach handling and timelock UTXO handling into the contract court package](https://github.com/lightningnetwork/lnd/pull/5745)
 
 * [Unused error check 
   removed](https://github.com/lightningnetwork/lnd/pull/5537).
@@ -235,6 +318,10 @@ you.
 
 * [Replace reference to JWT library with CVE](https://github.com/lightningnetwork/lnd/pull/5737)
 
+* [Replace reference to XZ library with CVE](https://github.com/lightningnetwork/lnd/pull/5789)
+
+* [Replace reference to mongo library with CVE](https://github.com/lightningnetwork/lnd/pull/5761)
+
 * [Fixed restore backup file test flake with bitcoind](https://github.com/lightningnetwork/lnd/pull/5637).
 
 * [Timing fix in AMP itest](https://github.com/lightningnetwork/lnd/pull/5725).
@@ -247,11 +334,21 @@ you.
 
 * [Order of the start/stop on subsystems are changed to promote better safety](https://github.com/lightningnetwork/lnd/pull/1783).
 
+* [Fixed flake that occurred when testing the new optimistic link shutdown.](https://github.com/lightningnetwork/lnd/pull/5808)
+ 
+* [Respect minimum relay fee during commitment fee updates](https://github.com/lightningnetwork/lnd/pull/5483).
+
+* [Replace reference to protobuf library with OSV](https://github.com/lightningnetwork/lnd/pull/5759)
+
 ## Database
 
 * [Ensure single writer for legacy
   code](https://github.com/lightningnetwork/lnd/pull/5547) when using etcd
   backend.
+* When starting/restarting, `lnd` will [clean forwarding packages, payment
+  circuits and keystones](https://github.com/lightningnetwork/lnd/pull/4364)
+  for closed channels, which will potentially free up disk space for long
+  running nodes that have lots of closed channels.
 
 * [Optimized payment sequence generation](https://github.com/lightningnetwork/lnd/pull/5514/)
   to make LNDs payment throughput (and latency) with better when using etcd.
@@ -299,7 +396,7 @@ you.
 ## Bug Fixes
 
 * A bug has been fixed that would cause `lnd` to [try to bootstrap using the
-  currnet DNS seeds when in SigNet
+  current DNS seeds when in SigNet
   mode](https://github.com/lightningnetwork/lnd/pull/5564).
 
 * [A validation check for sane `CltvLimit` and `FinalCltvDelta` has been added
@@ -324,6 +421,28 @@ you.
 * [Fix crash with empty AMP or MPP record in
   invoice](https://github.com/lightningnetwork/lnd/pull/5743).
 
+* [Config setting sync-freelist was ignored in certain
+  cases](https://github.com/lightningnetwork/lnd/pull/5527).
+
+* The underlying gRPC connection of a WebSocket is now [properly closed when the
+  WebSocket end of a connection is
+  closed](https://github.com/lightningnetwork/lnd/pull/5683). A bug with the
+  write deadline that caused connections to suddenly break was also fixed in the
+  same PR.
+
+* [A bug has been fixed in 
+  Neutrino](https://github.com/lightninglabs/neutrino/pull/226) that would 
+  result in transactions being rebroadcast even after they had been confirmed. 
+  [Lnd is updated to use the version of Neutrino containing this 
+  fix](https://github.com/lightningnetwork/lnd/pull/5807).
+ 
+* A bug has been fixed that would result in nodes not [reconnecting to their
+  persistent outbound peers if the peer's IP
+  address changed](https://github.com/lightningnetwork/lnd/pull/5538).
+
+* [Use the change output index when validating the reserved wallet balance for
+  SendCoins/SendMany calls](https://github.com/lightningnetwork/lnd/pull/5665)
+
 ## Documentation 
 
 The [code contribution guidelines have been updated to mention the new
@@ -334,12 +453,15 @@ change](https://github.com/lightningnetwork/lnd/pull/5613).
 * Alyssa Hertig
 * Andras Banki-Horvath
 * de6df1re
+* Elle Mouton
 * ErikEk
 * Eugene Siegel
 * Harsha Goli
+* Jesse de Wit
 * Martin Habovstiak
 * Naveen Srinivasan
 * Oliver Gugger
+* Priyansh Rastogi
 * Wilmer Paulino
 * xanoni
 * Yong Yu

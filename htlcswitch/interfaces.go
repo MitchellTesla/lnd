@@ -7,6 +7,7 @@ import (
 	"github.com/lightningnetwork/lnd/lnpeer"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwallet"
+	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/record"
 )
@@ -57,6 +58,21 @@ type packetHandler interface {
 	handleLocalAddPacket(*htlcPacket) error
 }
 
+// dustHandler is an interface used exclusively by the Switch to evaluate
+// whether a link has too much dust exposure.
+type dustHandler interface {
+	// getDustSum returns the dust sum on either the local or remote
+	// commitment.
+	getDustSum(remote bool) lnwire.MilliSatoshi
+
+	// getFeeRate returns the current channel feerate.
+	getFeeRate() chainfee.SatPerKWeight
+
+	// getDustClosure returns a closure that can evaluate whether a passed
+	// HTLC is dust.
+	getDustClosure() dustClosure
+}
+
 // ChannelUpdateHandler is an interface that provides methods that allow
 // sending lnwire.Message to the underlying link as well as querying state.
 type ChannelUpdateHandler interface {
@@ -88,6 +104,11 @@ type ChannelUpdateHandler interface {
 	// MayAddOutgoingHtlc returns an error if we may not add an outgoing
 	// htlc to the channel.
 	MayAddOutgoingHtlc() error
+
+	// ShutdownIfChannelClean shuts the link down if the channel state is
+	// clean. This can be used with dynamic commitment negotiation or coop
+	// close negotiation which require a clean channel state.
+	ShutdownIfChannelClean() error
 }
 
 // ChannelLink is an interface which represents the subsystem for managing the
@@ -116,6 +137,9 @@ type ChannelLink interface {
 
 	// Embed the ChannelUpdateHandler interface.
 	ChannelUpdateHandler
+
+	// Embed the dustHandler interface.
+	dustHandler
 
 	// ChannelPoint returns the channel outpoint for the channel link.
 	ChannelPoint() *wire.OutPoint

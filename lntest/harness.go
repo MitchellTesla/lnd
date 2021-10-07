@@ -28,6 +28,7 @@ import (
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc/grpclog"
 )
 
@@ -88,6 +89,7 @@ type DatabaseBackend int
 const (
 	BackendBbolt DatabaseBackend = iota
 	BackendEtcd
+	BackendPostgres
 )
 
 // NewNetworkHarness creates a new network test harness.
@@ -162,17 +164,22 @@ func (n *NetworkHarness) SetUp(t *testing.T,
 
 	// Start the initial seeder nodes within the test network, then connect
 	// their respective RPC clients.
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		n.Alice = n.NewNode(t, "Alice", lndArgs)
-	}()
-	go func() {
-		defer wg.Done()
-		n.Bob = n.NewNode(t, "Bob", lndArgs)
-	}()
-	wg.Wait()
+	eg := errgroup.Group{}
+	eg.Go(func() error {
+		var err error
+		n.Alice, err = n.newNode(
+			"Alice", lndArgs, false, nil, n.dbBackend, true,
+		)
+		return err
+	})
+	eg.Go(func() error {
+		var err error
+		n.Bob, err = n.newNode(
+			"Bob", lndArgs, false, nil, n.dbBackend, true,
+		)
+		return err
+	})
+	require.NoError(t, eg.Wait())
 
 	// First, make a connection between the two nodes. This will wait until
 	// both nodes are fully started since the Connect RPC is guarded behind
@@ -339,10 +346,10 @@ func (n *NetworkHarness) NewNodeEtcd(name string, etcdCfg *etcd.Config,
 // current instance of the network harness. The created node is running, but
 // not yet connected to other nodes within the network.
 func (n *NetworkHarness) NewNode(t *testing.T,
-	name string, extraArgs []string) *HarnessNode {
+	name string, extraArgs []string, opts ...NodeOption) *HarnessNode {
 
 	node, err := n.newNode(
-		name, extraArgs, false, nil, n.dbBackend, true,
+		name, extraArgs, false, nil, n.dbBackend, true, opts...,
 	)
 	require.NoErrorf(t, err, "unable to create new node for %s", name)
 
@@ -663,13 +670,31 @@ func (n *NetworkHarness) EnsureConnected(t *testing.T, a, b *HarnessNode) {
 	)
 }
 
-// ConnectNodes establishes an encrypted+authenticated p2p connection from node
+// ConnectNodes attempts to create a connection between nodes a and b.
+func (n *NetworkHarness) ConnectNodes(t *testing.T, a, b *HarnessNode) {
+	n.connectNodes(t, a, b, false)
+}
+
+// ConnectNodesPerm attempts to connect nodes a and b and sets node b as
+// a peer that node a should persistently attempt to reconnect to if they
+// become disconnected.
+func (n *NetworkHarness) ConnectNodesPerm(t *testing.T,
+	a, b *HarnessNode) {
+
+	n.connectNodes(t, a, b, true)
+}
+
+// connectNodes establishes an encrypted+authenticated p2p connection from node
 // a towards node b. The function will return a non-nil error if the connection
-// was unable to be established.
+// was unable to be established. If the perm parameter is set to true then
+// node a will persistently attempt to reconnect to node b if they get
+// disconnected.
 //
 // NOTE: This function may block for up to 15-seconds as it will not return
 // until the new connection is detected as being known to both nodes.
-func (n *NetworkHarness) ConnectNodes(t *testing.T, a, b *HarnessNode) {
+func (n *NetworkHarness) connectNodes(t *testing.T, a, b *HarnessNode,
+	perm bool) {
+
 	ctxb := context.Background()
 	ctx, cancel := context.WithTimeout(ctxb, DefaultTimeout)
 	defer cancel()
@@ -685,6 +710,7 @@ func (n *NetworkHarness) ConnectNodes(t *testing.T, a, b *HarnessNode) {
 			Pubkey: bobInfo.IdentityPubkey,
 			Host:   b.Cfg.P2PAddr(),
 		},
+		Perm: perm,
 	}
 
 	err = n.connect(ctx, req, a)
@@ -756,7 +782,7 @@ func (n *NetworkHarness) DisconnectNodes(a, b *HarnessNode) error {
 func (n *NetworkHarness) RestartNode(node *HarnessNode, callback func() error,
 	chanBackups ...*lnrpc.ChanBackupSnapshot) error {
 
-	err := n.RestartNodeNoUnlock(node, callback)
+	err := n.RestartNodeNoUnlock(node, callback, true)
 	if err != nil {
 		return err
 	}
@@ -794,7 +820,7 @@ func (n *NetworkHarness) RestartNode(node *HarnessNode, callback func() error,
 // the callback parameter is non-nil, then the function will be executed after
 // the node shuts down, but *before* the process has been started up again.
 func (n *NetworkHarness) RestartNodeNoUnlock(node *HarnessNode,
-	callback func() error) error {
+	callback func() error, wait bool) error {
 
 	if err := node.stop(); err != nil {
 		return err
@@ -806,7 +832,7 @@ func (n *NetworkHarness) RestartNodeNoUnlock(node *HarnessNode,
 		}
 	}
 
-	return node.start(n.lndBinary, n.lndErrorChan, true)
+	return node.start(n.lndBinary, n.lndErrorChan, wait)
 }
 
 // SuspendNode stops the given node and returns a callback that can be used to
@@ -1641,36 +1667,77 @@ func (n *NetworkHarness) BackupDb(hn *HarnessNode) error {
 		return errors.New("backup already created")
 	}
 
-	// Backup files.
-	tempDir, err := ioutil.TempDir("", "past-state")
+	restart, err := n.SuspendNode(hn)
 	if err != nil {
-		return fmt.Errorf("unable to create temp db folder: %v", err)
+		return err
 	}
 
-	if err := copyAll(tempDir, hn.DBDir()); err != nil {
-		return fmt.Errorf("unable to copy database files: %v", err)
+	if hn.postgresDbName != "" {
+		// Backup database.
+		backupDbName := hn.postgresDbName + "_backup"
+		err := executePgQuery(
+			"CREATE DATABASE " + backupDbName + " WITH TEMPLATE " +
+				hn.postgresDbName,
+		)
+		if err != nil {
+			return err
+		}
+	} else {
+		// Backup files.
+		tempDir, err := ioutil.TempDir("", "past-state")
+		if err != nil {
+			return fmt.Errorf("unable to create temp db folder: %v",
+				err)
+		}
+
+		if err := copyAll(tempDir, hn.DBDir()); err != nil {
+			return fmt.Errorf("unable to copy database files: %v",
+				err)
+		}
+
+		hn.backupDbDir = tempDir
 	}
 
-	hn.backupDbDir = tempDir
+	err = restart()
+	if err != nil {
+		return err
+	}
 
 	return nil
 }
 
 // RestoreDb restores a database backup.
 func (n *NetworkHarness) RestoreDb(hn *HarnessNode) error {
-	if hn.backupDbDir == "" {
-		return errors.New("no database backup created")
-	}
+	if hn.postgresDbName != "" {
+		// Restore database.
+		backupDbName := hn.postgresDbName + "_backup"
+		err := executePgQuery(
+			"DROP DATABASE " + hn.postgresDbName,
+		)
+		if err != nil {
+			return err
+		}
+		err = executePgQuery(
+			"ALTER DATABASE " + backupDbName + " RENAME TO " + hn.postgresDbName,
+		)
+		if err != nil {
+			return err
+		}
+	} else {
+		// Restore files.
+		if hn.backupDbDir == "" {
+			return errors.New("no database backup created")
+		}
 
-	// Restore files.
-	if err := copyAll(hn.DBDir(), hn.backupDbDir); err != nil {
-		return fmt.Errorf("unable to copy database files: %v", err)
-	}
+		if err := copyAll(hn.DBDir(), hn.backupDbDir); err != nil {
+			return fmt.Errorf("unable to copy database files: %v", err)
+		}
 
-	if err := os.RemoveAll(hn.backupDbDir); err != nil {
-		return fmt.Errorf("unable to remove backup dir: %v", err)
+		if err := os.RemoveAll(hn.backupDbDir); err != nil {
+			return fmt.Errorf("unable to remove backup dir: %v", err)
+		}
+		hn.backupDbDir = ""
 	}
-	hn.backupDbDir = ""
 
 	return nil
 }

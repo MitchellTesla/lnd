@@ -1,3 +1,4 @@
+//go:build !bitcoind && !neutrino
 // +build !bitcoind,!neutrino
 
 package lntest
@@ -89,6 +90,8 @@ func NewBackend(miner string, netParams *chaincfg.Params) (
 		// its requested data are not found. We add a nobanning flag to
 		// make sure they stay connected if it happens.
 		"--nobanning",
+		// Don't disconnect if a reply takes too long.
+		"--nostalldetect",
 	}
 	chainBackend, err := rpctest.New(netParams, nil, args, GetBtcdBinary())
 	if err != nil {

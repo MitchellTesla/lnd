@@ -1938,7 +1938,7 @@ func newSingleLinkTestHarness(chanAmt, chanReserve btcutil.Amount) (
 
 	pCache := newMockPreimageCache()
 
-	aliceDb := aliceLc.channel.State().Db
+	aliceDb := aliceLc.channel.State().Db.GetParentDB()
 	aliceSwitch, err := initSwitchWithDB(testStartingHeight, aliceDb)
 	if err != nil {
 		return nil, nil, nil, nil, nil, nil, err
@@ -2446,7 +2446,7 @@ func TestChannelLinkBandwidthConsistency(t *testing.T) {
 	addPkt.outgoingChanID = carolChanID
 	addPkt.outgoingHTLCID = 0
 
-	err = coreLink.cfg.Switch.openCircuits(addPkt.keystone())
+	err = coreLink.cfg.Circuits.OpenCircuits(addPkt.keystone())
 	if err != nil {
 		t.Fatalf("unable to set keystone: %v", err)
 	}
@@ -2554,7 +2554,7 @@ func TestChannelLinkBandwidthConsistency(t *testing.T) {
 	addPkt.outgoingChanID = carolChanID
 	addPkt.outgoingHTLCID = 1
 
-	err = coreLink.cfg.Switch.openCircuits(addPkt.keystone())
+	err = coreLink.cfg.Circuits.OpenCircuits(addPkt.keystone())
 	if err != nil {
 		t.Fatalf("unable to set keystone: %v", err)
 	}
@@ -3744,6 +3744,7 @@ func TestShouldAdjustCommitFee(t *testing.T) {
 	tests := []struct {
 		netFee       chainfee.SatPerKWeight
 		chanFee      chainfee.SatPerKWeight
+		minRelayFee  chainfee.SatPerKWeight
 		shouldAdjust bool
 	}{
 
@@ -3819,11 +3820,22 @@ func TestShouldAdjustCommitFee(t *testing.T) {
 			chanFee:      1000,
 			shouldAdjust: false,
 		},
+
+		// The network fee is higher than our commitment fee,
+		// hasn't yet crossed our activation threshold, but the
+		// current commitment fee is below the minimum relay fee and
+		// so the fee should be updated.
+		{
+			netFee:       1100,
+			chanFee:      1098,
+			minRelayFee:  1099,
+			shouldAdjust: true,
+		},
 	}
 
 	for i, test := range tests {
 		adjustedFee := shouldAdjustCommitFee(
-			test.netFee, test.chanFee,
+			test.netFee, test.chanFee, test.minRelayFee,
 		)
 
 		if adjustedFee && !test.shouldAdjust {
@@ -4009,6 +4021,13 @@ func TestChannelLinkUpdateCommitFee(t *testing.T) {
 		{"bob", "alice", &lnwire.RevokeAndAck{}, false},
 		{"bob", "alice", &lnwire.CommitSig{}, false},
 		{"alice", "bob", &lnwire.RevokeAndAck{}, false},
+
+		// Third fee update.
+		{"alice", "bob", &lnwire.UpdateFee{}, false},
+		{"alice", "bob", &lnwire.CommitSig{}, false},
+		{"bob", "alice", &lnwire.RevokeAndAck{}, false},
+		{"bob", "alice", &lnwire.CommitSig{}, false},
+		{"alice", "bob", &lnwire.RevokeAndAck{}, false},
 	}
 	n.aliceServer.intersect(createInterceptorFunc("[alice] <-- [bob]",
 		"alice", messages, chanID, false))
@@ -4025,8 +4044,8 @@ func TestChannelLinkUpdateCommitFee(t *testing.T) {
 
 	// triggerFeeUpdate is a helper closure to determine whether a fee
 	// update was triggered and completed properly.
-	triggerFeeUpdate := func(feeEstimate, newFeeRate chainfee.SatPerKWeight,
-		shouldUpdate bool) {
+	triggerFeeUpdate := func(feeEstimate, minRelayFee,
+		newFeeRate chainfee.SatPerKWeight, shouldUpdate bool) {
 
 		t.Helper()
 
@@ -4044,6 +4063,13 @@ func TestChannelLinkUpdateCommitFee(t *testing.T) {
 		case n.feeEstimator.byteFeeIn <- feeEstimate:
 		case <-time.After(time.Second * 5):
 			t.Fatalf("alice didn't query for the new network fee")
+		}
+
+		// We also send the min relay fee response to Alice.
+		select {
+		case n.feeEstimator.relayFee <- minRelayFee:
+		case <-time.After(time.Second * 5):
+			t.Fatalf("alice didn't query for the min relay fee")
 		}
 
 		// Record the fee rates after the links have processed the fee
@@ -4071,20 +4097,28 @@ func TestChannelLinkUpdateCommitFee(t *testing.T) {
 		}, 10*time.Second, time.Second)
 	}
 
+	minRelayFee := startingFeeRate / 3
+
 	// Triggering the link to update the fee of the channel with the same
 	// fee rate should not send a fee update.
-	triggerFeeUpdate(startingFeeRate, startingFeeRate, false)
+	triggerFeeUpdate(startingFeeRate, minRelayFee, startingFeeRate, false)
 
 	// Triggering the link to update the fee of the channel with a much
 	// larger fee rate _should_ send a fee update.
 	newFeeRate := startingFeeRate * 3
-	triggerFeeUpdate(newFeeRate, newFeeRate, true)
+	triggerFeeUpdate(newFeeRate, minRelayFee, newFeeRate, true)
 
 	// Triggering the link to update the fee of the channel with a fee rate
 	// that exceeds its maximum fee allocation should result in a fee rate
 	// corresponding to the maximum fee allocation.
-	const maxFeeRate chainfee.SatPerKWeight = 207182320
-	triggerFeeUpdate(maxFeeRate+1, maxFeeRate, true)
+	const maxFeeRate chainfee.SatPerKWeight = 207180182
+	triggerFeeUpdate(maxFeeRate+1, minRelayFee, maxFeeRate, true)
+
+	// Triggering the link to update the fee of the channel with a fee rate
+	// that is below the current min relay fee rate should result in a fee
+	// rate corresponding to the minimum relay fee.
+	newFeeRate = minRelayFee / 2
+	triggerFeeUpdate(newFeeRate, minRelayFee, minRelayFee, true)
 }
 
 // TestChannelLinkAcceptDuplicatePayment tests that if a link receives an
@@ -4438,7 +4472,7 @@ func (h *persistentLinkHarness) restartLink(
 		pCache = newMockPreimageCache()
 	)
 
-	aliceDb := aliceChannel.State().Db
+	aliceDb := aliceChannel.State().Db.GetParentDB()
 	aliceSwitch := h.coreLink.cfg.Switch
 	if restartSwitch {
 		var err error
@@ -5370,6 +5404,10 @@ func (m *mockPackager) LoadFwdPkgs(tx kvdb.RTx) ([]*channeldb.FwdPkg, error) {
 }
 
 func (*mockPackager) RemovePkg(tx kvdb.RwTx, height uint64) error {
+	return nil
+}
+
+func (*mockPackager) Wipe(tx kvdb.RwTx) error {
 	return nil
 }
 
@@ -6529,6 +6567,95 @@ func TestPendingCommitTicker(t *testing.T) {
 
 	case <-time.After(time.Second):
 		t.Fatalf("did not receive failure")
+	}
+}
+
+// TestShutdownIfChannelClean tests that a link will exit the htlcManager loop
+// if and only if the underlying channel state is clean.
+func TestShutdownIfChannelClean(t *testing.T) {
+	t.Parallel()
+
+	const chanAmt = btcutil.SatoshiPerBitcoin * 5
+	const chanReserve = btcutil.SatoshiPerBitcoin * 1
+	aliceLink, bobChannel, batchTicker, start, cleanUp, _, err :=
+		newSingleLinkTestHarness(chanAmt, chanReserve)
+	require.NoError(t, err)
+
+	var (
+		coreLink  = aliceLink.(*channelLink)
+		aliceMsgs = coreLink.cfg.Peer.(*mockPeer).sentMsgs
+	)
+
+	shutdownAssert := func(expectedErr error) {
+		err = aliceLink.ShutdownIfChannelClean()
+		if expectedErr != nil {
+			require.Error(t, err, expectedErr)
+		} else {
+			require.NoError(t, err)
+		}
+	}
+
+	err = start()
+	require.NoError(t, err)
+	defer cleanUp()
+
+	ctx := linkTestContext{
+		t:          t,
+		aliceLink:  aliceLink,
+		bobChannel: bobChannel,
+		aliceMsgs:  aliceMsgs,
+	}
+
+	// First send an HTLC from Bob to Alice and assert that the link can't
+	// be shutdown while the update is outstanding.
+	htlc := generateHtlc(t, coreLink, 0)
+
+	// <---add-----
+	ctx.sendHtlcBobToAlice(htlc)
+	// <---sig-----
+	ctx.sendCommitSigBobToAlice(1)
+	// ----rev---->
+	ctx.receiveRevAndAckAliceToBob()
+	shutdownAssert(ErrLinkFailedShutdown)
+
+	// ----sig---->
+	ctx.receiveCommitSigAliceToBob(1)
+	shutdownAssert(ErrLinkFailedShutdown)
+
+	// <---rev-----
+	ctx.sendRevAndAckBobToAlice()
+	shutdownAssert(ErrLinkFailedShutdown)
+
+	// ---settle-->
+	ctx.receiveSettleAliceToBob()
+	shutdownAssert(ErrLinkFailedShutdown)
+
+	// ----sig---->
+	ctx.receiveCommitSigAliceToBob(0)
+	shutdownAssert(ErrLinkFailedShutdown)
+
+	// <---rev-----
+	ctx.sendRevAndAckBobToAlice()
+	shutdownAssert(ErrLinkFailedShutdown)
+
+	// There is currently no controllable breakpoint between Alice
+	// receiving the CommitSig and her sending out the RevokeAndAck. As
+	// soon as the RevokeAndAck is generated, the channel becomes clean.
+	// This can happen right after the CommitSig is received, so there is
+	// no shutdown assertion here.
+	// <---sig-----
+	ctx.sendCommitSigBobToAlice(0)
+
+	// ----rev---->
+	ctx.receiveRevAndAckAliceToBob()
+	shutdownAssert(nil)
+
+	// Now that the link has exited the htlcManager loop, attempt to
+	// trigger the batch ticker. It should not be possible.
+	select {
+	case batchTicker <- time.Now():
+		t.Fatalf("expected batch ticker to be inactive")
+	case <-time.After(5 * time.Second):
 	}
 }
 

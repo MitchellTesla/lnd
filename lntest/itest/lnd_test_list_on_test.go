@@ -1,3 +1,4 @@
+//go:build rpctest
 // +build rpctest
 
 package itest
@@ -38,6 +39,10 @@ var allTestCases = []*testCase{
 	{
 		name: "disconnecting target peer",
 		test: testDisconnectingTargetPeer,
+	},
+	{
+		name: "reconnect after ip change",
+		test: testReconnectAfterIPChange,
 	},
 	{
 		name: "graph topology notifications",
@@ -275,6 +280,10 @@ var allTestCases = []*testCase{
 		test: testPsbtChanFunding,
 	},
 	{
+		name: "psbt channel funding external",
+		test: testPsbtChanFundingExternal,
+	},
+	{
 		name: "batch channel funding",
 		test: testBatchChanFunding,
 	},
@@ -337,5 +346,13 @@ var allTestCases = []*testCase{
 	{
 		name: "max htlc pathfind",
 		test: testMaxHtlcPathfind,
+	},
+	{
+		name: "rpc middleware interceptor",
+		test: testRPCMiddlewareInterceptor,
+	},
+	{
+		name: "wipe forwarding packages",
+		test: testWipeForwardingPackages,
 	},
 }

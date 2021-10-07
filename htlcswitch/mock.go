@@ -16,6 +16,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btcutil"
 	"github.com/go-errors/errors"
 	sphinx "github.com/lightningnetwork/lightning-onion"
 	"github.com/lightningnetwork/lnd/chainntnfs"
@@ -70,6 +71,7 @@ func (m *mockPreimageCache) SubscribeUpdates() *contractcourt.WitnessSubscriptio
 
 type mockFeeEstimator struct {
 	byteFeeIn chan chainfee.SatPerKWeight
+	relayFee  chan chainfee.SatPerKWeight
 
 	quit chan struct{}
 }
@@ -77,6 +79,7 @@ type mockFeeEstimator struct {
 func newMockFeeEstimator() *mockFeeEstimator {
 	return &mockFeeEstimator{
 		byteFeeIn: make(chan chainfee.SatPerKWeight),
+		relayFee:  make(chan chainfee.SatPerKWeight),
 		quit:      make(chan struct{}),
 	}
 }
@@ -93,7 +96,12 @@ func (m *mockFeeEstimator) EstimateFeePerKW(
 }
 
 func (m *mockFeeEstimator) RelayFeePerKW() chainfee.SatPerKWeight {
-	return 1e3
+	select {
+	case feeRate := <-m.relayFee:
+		return feeRate
+	case <-m.quit:
+		return 0
+	}
 }
 
 func (m *mockFeeEstimator) Start() error {
@@ -169,8 +177,10 @@ func initSwitchWithDB(startingHeight uint32, db *channeldb.DB) (*Switch, error) 
 	}
 
 	cfg := Config{
-		DB:             db,
-		SwitchPackager: channeldb.NewSwitchPackager(),
+		DB:                   db,
+		FetchAllOpenChannels: db.ChannelStateDB().FetchAllOpenChannels,
+		FetchClosedChannels:  db.ChannelStateDB().FetchClosedChannels,
+		SwitchPackager:       channeldb.NewSwitchPackager(),
 		FwdingLog: &mockForwardingLog{
 			events: make(map[time.Time]channeldb.ForwardingEvent),
 		},
@@ -188,6 +198,7 @@ func initSwitchWithDB(startingHeight uint32, db *channeldb.DB) (*Switch, error) 
 		HtlcNotifier:   &mockHTLCNotifier{},
 		Clock:          clock.NewDefaultClock(),
 		HTLCExpiry:     time.Hour,
+		DustThreshold:  DefaultDustThreshold,
 	}
 
 	return New(cfg, startingHeight)
@@ -671,7 +682,8 @@ func (f *mockChannelLink) completeCircuit(pkt *htlcPacket) error {
 		htlc.ID = f.htlcID
 
 		keystone := Keystone{pkt.inKey(), pkt.outKey()}
-		if err := f.htlcSwitch.openCircuits(keystone); err != nil {
+		err := f.htlcSwitch.circuits.OpenCircuits(keystone)
+		if err != nil {
 			return err
 		}
 
@@ -690,7 +702,7 @@ func (f *mockChannelLink) completeCircuit(pkt *htlcPacket) error {
 }
 
 func (f *mockChannelLink) deleteCircuit(pkt *htlcPacket) error {
-	return f.htlcSwitch.deleteCircuits(pkt.inKey())
+	return f.htlcSwitch.circuits.DeleteCircuits(pkt.inKey())
 }
 
 func newMockChannelLink(htlcSwitch *Switch, chanID lnwire.ChannelID,
@@ -714,6 +726,21 @@ func (f *mockChannelLink) handleSwitchPacket(pkt *htlcPacket) error {
 func (f *mockChannelLink) handleLocalAddPacket(pkt *htlcPacket) error {
 	_ = f.mailBox.AddPacket(pkt)
 	return nil
+}
+
+func (f *mockChannelLink) getDustSum(remote bool) lnwire.MilliSatoshi {
+	return 0
+}
+
+func (f *mockChannelLink) getFeeRate() chainfee.SatPerKWeight {
+	return 0
+}
+
+func (f *mockChannelLink) getDustClosure() dustClosure {
+	dustLimit := btcutil.Amount(400)
+	return dustHelper(
+		channeldb.SingleFunderTweaklessBit, dustLimit, dustLimit,
+	)
 }
 
 func (f *mockChannelLink) HandleChannelUpdate(lnwire.Message) {
@@ -741,6 +768,7 @@ func (f *mockChannelLink) Stats() (uint64, lnwire.MilliSatoshi, lnwire.MilliSato
 func (f *mockChannelLink) AttachMailBox(mailBox MailBox) {
 	f.mailBox = mailBox
 	f.packets = mailBox.PacketOutBox()
+	mailBox.SetDustClosure(f.getDustClosure())
 }
 
 func (f *mockChannelLink) Start() error {
@@ -757,6 +785,7 @@ func (f *mockChannelLink) ChannelPoint() *wire.OutPoint                 { return
 func (f *mockChannelLink) Stop()                                        {}
 func (f *mockChannelLink) EligibleToForward() bool                      { return f.eligible }
 func (f *mockChannelLink) MayAddOutgoingHtlc() error                    { return nil }
+func (f *mockChannelLink) ShutdownIfChannelClean() error                { return nil }
 func (f *mockChannelLink) setLiveShortChanID(sid lnwire.ShortChannelID) { f.shortChanID = sid }
 func (f *mockChannelLink) UpdateShortChanID() (lnwire.ShortChannelID, error) {
 	f.eligible = true

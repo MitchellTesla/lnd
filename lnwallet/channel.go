@@ -615,7 +615,7 @@ func (c *commitment) populateHtlcIndexes(chanType channeldb.ChannelType,
 	// populateIndex is a helper function that populates the necessary
 	// indexes within the commitment view for a particular HTLC.
 	populateIndex := func(htlc *PaymentDescriptor, incoming bool) error {
-		isDust := htlcIsDust(
+		isDust := HtlcIsDust(
 			chanType, incoming, c.isOurs, c.feePerKw,
 			htlc.Amount.ToSatoshis(), c.dustLimit,
 		)
@@ -792,7 +792,7 @@ func (lc *LightningChannel) diskHtlcToPayDesc(feeRate chainfee.SatPerKWeight,
 	// generate them in order to locate the outputs within the commitment
 	// transaction. As we'll mark dust with a special output index in the
 	// on-disk state snapshot.
-	isDustLocal := htlcIsDust(
+	isDustLocal := HtlcIsDust(
 		chanType, htlc.Incoming, true, feeRate,
 		htlc.Amt.ToSatoshis(), lc.channelState.LocalChanCfg.DustLimit,
 	)
@@ -805,7 +805,7 @@ func (lc *LightningChannel) diskHtlcToPayDesc(feeRate chainfee.SatPerKWeight,
 			return pd, err
 		}
 	}
-	isDustRemote := htlcIsDust(
+	isDustRemote := HtlcIsDust(
 		chanType, htlc.Incoming, false, feeRate,
 		htlc.Amt.ToSatoshis(), lc.channelState.RemoteChanCfg.DustLimit,
 	)
@@ -1436,7 +1436,7 @@ func (lc *LightningChannel) logUpdateToPayDesc(logUpdate *channeldb.LogUpdate,
 		pd.OnionBlob = make([]byte, len(wireMsg.OnionBlob))
 		copy(pd.OnionBlob[:], wireMsg.OnionBlob[:])
 
-		isDustRemote := htlcIsDust(
+		isDustRemote := HtlcIsDust(
 			lc.channelState.ChanType, false, false, feeRate,
 			wireMsg.Amount.ToSatoshis(), remoteDustLimit,
 		)
@@ -2401,7 +2401,7 @@ func NewBreachRetribution(chanState *channeldb.OpenChannel, stateNum uint64,
 	for _, htlc := range revokedSnapshot.Htlcs {
 		// If the HTLC is dust, then we'll skip it as it doesn't have
 		// an output on the commitment transaction.
-		if htlcIsDust(
+		if HtlcIsDust(
 			chanState.ChanType, htlc.Incoming, false,
 			chainfee.SatPerKWeight(revokedSnapshot.FeePerKw),
 			htlc.Amt.ToSatoshis(), chanState.RemoteChanCfg.DustLimit,
@@ -2473,13 +2473,13 @@ func NewBreachRetribution(chanState *channeldb.OpenChannel, stateNum uint64,
 	}, nil
 }
 
-// htlcIsDust determines if an HTLC output is dust or not depending on two
+// HtlcIsDust determines if an HTLC output is dust or not depending on two
 // bits: if the HTLC is incoming and if the HTLC will be placed on our
 // commitment transaction, or theirs. These two pieces of information are
 // require as we currently used second-level HTLC transactions as off-chain
 // covenants. Depending on the two bits, we'll either be using a timeout or
 // success transaction which have different weights.
-func htlcIsDust(chanType channeldb.ChannelType,
+func HtlcIsDust(chanType channeldb.ChannelType,
 	incoming, ourCommit bool, feePerKw chainfee.SatPerKWeight,
 	htlcAmt, dustLimit btcutil.Amount) bool {
 
@@ -2995,7 +2995,7 @@ func genRemoteHtlcSigJobs(keyRing *CommitmentKeyRing,
 	// dust output after taking into account second-level HTLC fees, then a
 	// sigJob will be generated and appended to the current batch.
 	for _, htlc := range remoteCommitView.incomingHTLCs {
-		if htlcIsDust(
+		if HtlcIsDust(
 			chanType, true, false, feePerKw,
 			htlc.Amount.ToSatoshis(), dustLimit,
 		) {
@@ -3049,7 +3049,7 @@ func genRemoteHtlcSigJobs(keyRing *CommitmentKeyRing,
 		sigBatch = append(sigBatch, sigJob)
 	}
 	for _, htlc := range remoteCommitView.outgoingHTLCs {
-		if htlcIsDust(
+		if HtlcIsDust(
 			chanType, false, false, feePerKw,
 			htlc.Amount.ToSatoshis(), dustLimit,
 		) {
@@ -4040,7 +4040,7 @@ func (lc *LightningChannel) computeView(view *htlcView, remoteChain bool,
 	// weight, needed to calculate the transaction fee.
 	var totalHtlcWeight int64
 	for _, htlc := range filteredHTLCView.ourUpdates {
-		if htlcIsDust(
+		if HtlcIsDust(
 			lc.channelState.ChanType, false, !remoteChain,
 			feePerKw, htlc.Amount.ToSatoshis(), dustLimit,
 		) {
@@ -4050,7 +4050,7 @@ func (lc *LightningChannel) computeView(view *htlcView, remoteChain bool,
 		totalHtlcWeight += input.HTLCWeight
 	}
 	for _, htlc := range filteredHTLCView.theirUpdates {
-		if htlcIsDust(
+		if HtlcIsDust(
 			lc.channelState.ChanType, true, !remoteChain,
 			feePerKw, htlc.Amount.ToSatoshis(), dustLimit,
 		) {
@@ -4468,6 +4468,50 @@ func (lc *LightningChannel) ReceiveNewCommitment(commitSig lnwire.Sig,
 	lc.localCommitChain.addCommitment(localCommitmentView)
 
 	return nil
+}
+
+// IsChannelClean returns true if neither side has pending commitments, neither
+// side has HTLC's, and all updates are locked in irrevocably. Internally, it
+// utilizes the oweCommitment function by calling it for local and remote
+// evaluation. We check if we have a pending commitment for our local state
+// since this function may be called by sub-systems that are not the link (e.g.
+// the rpcserver), and the ReceiveNewCommitment & RevokeCurrentCommitment calls
+// are not atomic, even though link processing ensures no updates can happen in
+// between.
+func (lc *LightningChannel) IsChannelClean() bool {
+	lc.RLock()
+	defer lc.RUnlock()
+
+	// Check whether we have a pending commitment for our local state.
+	if lc.localCommitChain.hasUnackedCommitment() {
+		return false
+	}
+
+	// Check whether our counterparty has a pending commitment for their
+	// state.
+	if lc.remoteCommitChain.hasUnackedCommitment() {
+		return false
+	}
+
+	// We call ActiveHtlcs to ensure there are no HTLCs on either
+	// commitment.
+	if len(lc.channelState.ActiveHtlcs()) != 0 {
+		return false
+	}
+
+	// Now check that both local and remote commitments are signing the
+	// same updates.
+	if lc.oweCommitment(true) {
+		return false
+	}
+
+	if lc.oweCommitment(false) {
+		return false
+	}
+
+	// If we reached this point, the channel has no HTLCs and both
+	// commitments sign the same updates.
+	return true
 }
 
 // OweCommitment returns a boolean value reflecting whether we need to send
@@ -4930,6 +4974,67 @@ func (lc *LightningChannel) AddHTLC(htlc *lnwire.UpdateAddHTLC,
 	lc.localUpdateLog.appendHtlc(pd)
 
 	return pd.HtlcIndex, nil
+}
+
+// GetDustSum takes in a boolean that determines which commitment to evaluate
+// the dust sum on. The return value is the sum of dust on the desired
+// commitment tx.
+//
+// NOTE: This over-estimates the dust exposure.
+func (lc *LightningChannel) GetDustSum(remote bool) lnwire.MilliSatoshi {
+	lc.RLock()
+	defer lc.RUnlock()
+
+	var dustSum lnwire.MilliSatoshi
+
+	dustLimit := lc.channelState.LocalChanCfg.DustLimit
+	commit := lc.channelState.LocalCommitment
+	if remote {
+		// Calculate dust sum on the remote's commitment.
+		dustLimit = lc.channelState.RemoteChanCfg.DustLimit
+		commit = lc.channelState.RemoteCommitment
+	}
+
+	chanType := lc.channelState.ChanType
+	feeRate := chainfee.SatPerKWeight(commit.FeePerKw)
+
+	// Grab all of our HTLCs and evaluate against the dust limit.
+	for e := lc.localUpdateLog.Front(); e != nil; e = e.Next() {
+		pd := e.Value.(*PaymentDescriptor)
+		if pd.EntryType != Add {
+			continue
+		}
+
+		amt := pd.Amount.ToSatoshis()
+
+		// If the satoshi amount is under the dust limit, add the msat
+		// amount to the dust sum.
+		if HtlcIsDust(
+			chanType, false, !remote, feeRate, amt, dustLimit,
+		) {
+			dustSum += pd.Amount
+		}
+	}
+
+	// Grab all of their HTLCs and evaluate against the dust limit.
+	for e := lc.remoteUpdateLog.Front(); e != nil; e = e.Next() {
+		pd := e.Value.(*PaymentDescriptor)
+		if pd.EntryType != Add {
+			continue
+		}
+
+		amt := pd.Amount.ToSatoshis()
+
+		// If the satoshi amount is under the dust limit, add the msat
+		// amount to the dust sum.
+		if HtlcIsDust(
+			chanType, true, !remote, feeRate, amt, dustLimit,
+		) {
+			dustSum += pd.Amount
+		}
+	}
+
+	return dustSum
 }
 
 // MayAddOutgoingHtlc validates whether we can add an outgoing htlc to this
@@ -6012,7 +6117,7 @@ func extractHtlcResolutions(feePerKw chainfee.SatPerKWeight, ourCommit bool,
 		// We'll skip any HTLC's which were dust on the commitment
 		// transaction, as these don't have a corresponding output
 		// within the commitment transaction.
-		if htlcIsDust(
+		if HtlcIsDust(
 			chanType, htlc.Incoming, ourCommit, feePerKw,
 			htlc.Amt.ToSatoshis(), dustLimit,
 		) {
@@ -6716,7 +6821,10 @@ func (lc *LightningChannel) validateFeeRate(feePerKw chainfee.SatPerKWeight) err
 	// be above our reserve balance. Otherwise, we'll reject the fee
 	// update.
 	availableBalance, txWeight := lc.availableBalance()
-	oldFee := lnwire.NewMSatFromSatoshis(lc.localCommitChain.tip().fee)
+
+	oldFee := lnwire.NewMSatFromSatoshis(
+		lc.localCommitChain.tip().feePerKw.FeeForWeight(txWeight),
+	)
 
 	// Our base balance is the total amount of satoshis we can commit
 	// towards fees before factoring in the channel reserve.
@@ -6736,17 +6844,6 @@ func (lc *LightningChannel) validateFeeRate(feePerKw chainfee.SatPerKWeight) err
 		return fmt.Errorf("cannot apply fee_update=%v sat/kw, new fee "+
 			"of %v is greater than balance of %v", int64(feePerKw),
 			newFee, baseBalance)
-	}
-
-	// If this new balance is below our reserve, then we can't accommodate
-	// the fee change, so we'll reject it.
-	balanceAfterFee := baseBalance - newFee
-	if balanceAfterFee.ToSatoshis() < lc.channelState.LocalChanCfg.ChanReserve {
-		return fmt.Errorf("cannot apply fee_update=%v sat/kw, "+
-			"new balance=%v would dip below channel reserve=%v",
-			int64(feePerKw),
-			balanceAfterFee.ToSatoshis(),
-			lc.channelState.LocalChanCfg.ChanReserve)
 	}
 
 	// TODO(halseth): should fail if fee update is unreasonable,
@@ -6893,39 +6990,102 @@ func (lc *LightningChannel) CalcFee(feeRate chainfee.SatPerKWeight) btcutil.Amou
 }
 
 // MaxFeeRate returns the maximum fee rate given an allocation of the channel
-// initiator's spendable balance. This can be useful to determine when we should
-// stop proposing fee updates that exceed our maximum allocation. We also take
-// a fee rate cap that should be used for anchor type channels.
+// initiator's spendable balance along with the local reserve amount. This can
+// be useful to determine when we should stop proposing fee updates that exceed
+// our maximum allocation.
 //
 // NOTE: This should only be used for channels in which the local commitment is
 // the initiator.
-func (lc *LightningChannel) MaxFeeRate(maxAllocation float64,
-	maxAnchorFeeRate chainfee.SatPerKWeight) chainfee.SatPerKWeight {
-
+func (lc *LightningChannel) MaxFeeRate(maxAllocation float64) chainfee.SatPerKWeight {
 	lc.RLock()
 	defer lc.RUnlock()
 
-	// The maximum fee depends of the available balance that can be
-	// committed towards fees.
-	commit := lc.channelState.LocalCommitment
-	feeBalance := float64(
-		commit.LocalBalance.ToSatoshis() + commit.CommitFee,
-	)
-	maxFee := feeBalance * maxAllocation
+	// The maximum fee depends on the available balance that can be
+	// committed towards fees. It takes into account our local reserve
+	// balance.
+	availableBalance, weight := lc.availableBalance()
+
+	oldFee := lc.localCommitChain.tip().feePerKw.FeeForWeight(weight)
+
+	// baseBalance is the maximum amount available for us to spend on fees.
+	baseBalance := availableBalance.ToSatoshis() + oldFee
+
+	maxFee := float64(baseBalance) * maxAllocation
 
 	// Ensure the fee rate doesn't dip below the fee floor.
-	_, weight := lc.availableBalance()
 	maxFeeRate := maxFee / (float64(weight) / 1000)
-	feeRate := chainfee.SatPerKWeight(
+	return chainfee.SatPerKWeight(
 		math.Max(maxFeeRate, float64(chainfee.FeePerKwFloor)),
 	)
+}
 
-	// Cap anchor fee rates.
-	if lc.channelState.ChanType.HasAnchors() && feeRate > maxAnchorFeeRate {
-		return maxAnchorFeeRate
+// IdealCommitFeeRate uses the current network fee, the minimum relay fee,
+// maximum fee allocation and anchor channel commitment fee rate to determine
+// the ideal fee to be used for the commitments of the channel.
+func (lc *LightningChannel) IdealCommitFeeRate(netFeeRate, minRelayFeeRate,
+	maxAnchorCommitFeeRate chainfee.SatPerKWeight,
+	maxFeeAlloc float64) chainfee.SatPerKWeight {
+
+	// Get the maximum fee rate that we can use given our max fee allocation
+	// and given the local reserve balance that we must preserve.
+	maxFeeRate := lc.MaxFeeRate(maxFeeAlloc)
+
+	var commitFeeRate chainfee.SatPerKWeight
+
+	// If the channel has anchor outputs then cap the fee rate at the
+	// max anchor fee rate if that maximum is less than our max fee rate.
+	// Otherwise, cap the fee rate at the max fee rate.
+	switch lc.channelState.ChanType.HasAnchors() &&
+		maxFeeRate > maxAnchorCommitFeeRate {
+
+	case true:
+		commitFeeRate = chainfee.SatPerKWeight(
+			math.Min(
+				float64(netFeeRate),
+				float64(maxAnchorCommitFeeRate),
+			),
+		)
+
+	case false:
+		commitFeeRate = chainfee.SatPerKWeight(
+			math.Min(float64(netFeeRate), float64(maxFeeRate)),
+		)
 	}
 
-	return feeRate
+	if commitFeeRate >= minRelayFeeRate {
+		return commitFeeRate
+	}
+
+	// The commitment fee rate is below the minimum relay fee rate.
+	// If the min relay fee rate is still below the maximum fee, then use
+	// the minimum relay fee rate.
+	if minRelayFeeRate <= maxFeeRate {
+		return minRelayFeeRate
+	}
+
+	// The minimum relay fee rate is more than the ideal maximum fee rate.
+	// Check if it is smaller than the absolute maximum fee rate we can
+	// use. If it is, then we use the minimum relay fee rate and we log a
+	// warning to indicate that the max channel fee allocation option was
+	// ignored.
+	absoluteMaxFee := lc.MaxFeeRate(1)
+	if minRelayFeeRate <= absoluteMaxFee {
+		lc.log.Warn("Ignoring max channel fee allocation to " +
+			"ensure that the commitment fee is above the " +
+			"minimum relay fee.")
+
+		return minRelayFeeRate
+	}
+
+	// The absolute maximum fee rate we can pay is below the minimum
+	// relay fee rate. The commitment tx will not be able to propagate.
+	// To give the transaction the best chance, we use the absolute
+	// maximum fee we have available and we log an error.
+	lc.log.Errorf("The commitment fee rate of %s is below the current "+
+		"minimum relay fee rate of %s. The max fee rate of %s will be"+
+		"used.", commitFeeRate, minRelayFeeRate, absoluteMaxFee)
+
+	return absoluteMaxFee
 }
 
 // RemoteNextRevocation returns the channelState's RemoteNextRevocation.

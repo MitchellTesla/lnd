@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcutil"
 	"github.com/btcsuite/btcwallet/wallet"
@@ -111,7 +112,10 @@ func AdminAuthOptions(cfg *Config, skipMacaroons bool) ([]grpc.DialOption, error
 		}
 
 		// Now we append the macaroon credentials to the dial options.
-		cred := macaroons.NewMacaroonCredential(mac)
+		cred, err := macaroons.NewMacaroonCredential(mac)
+		if err != nil {
+			return nil, fmt.Errorf("error cloning mac: %v", err)
+		}
 		opts = append(opts, grpc.WithPerRPCCredentials(cred))
 	}
 
@@ -349,7 +353,7 @@ func Main(cfg *Config, lisCfg ListenerCfg, interceptor signal.Interceptor) error
 	// Create a new RPC interceptor that we'll add to the GRPC server. This
 	// will be used to log the API calls invoked on the GRPC server.
 	interceptorChain := rpcperms.NewInterceptorChain(
-		rpcsLog, cfg.NoMacaroons,
+		rpcsLog, cfg.NoMacaroons, cfg.RPCMiddleware.Mandatory,
 	)
 	if err := interceptorChain.Start(); err != nil {
 		return err
@@ -579,6 +583,7 @@ func Main(cfg *Config, lisCfg ListenerCfg, interceptor signal.Interceptor) error
 		macaroonService, err = macaroons.NewService(
 			dbs.macaroonDB, "lnd", walletInitParams.StatelessInit,
 			macaroons.IPLockChecker,
+			macaroons.CustomChecker(interceptorChain),
 		)
 		if err != nil {
 			err := fmt.Errorf("unable to set up macaroon "+
@@ -693,7 +698,7 @@ func Main(cfg *Config, lisCfg ListenerCfg, interceptor signal.Interceptor) error
 		BtcdMode:                    cfg.BtcdMode,
 		LtcdMode:                    cfg.LtcdMode,
 		HeightHintDB:                dbs.heightHintDB,
-		ChanStateDB:                 dbs.chanStateDB,
+		ChanStateDB:                 dbs.chanStateDB.ChannelStateDB(),
 		PrivateWalletPw:             privateWalletPw,
 		PublicWalletPw:              publicWalletPw,
 		Birthday:                    walletInitParams.Birthday,
@@ -1629,7 +1634,7 @@ func initializeDatabases(ctx context.Context,
 
 	if cfg.DB.Backend == lncfg.BoltBackend {
 		ltndLog.Infof("Opening bbolt database, sync_freelist=%v, "+
-			"auto_compact=%v", cfg.DB.Bolt.SyncFreelist,
+			"auto_compact=%v", !cfg.DB.Bolt.NoFreelistSync,
 			cfg.DB.Bolt.AutoCompact)
 	}
 
@@ -1675,14 +1680,27 @@ func initializeDatabases(ctx context.Context,
 			"instances")
 	}
 
-	// Otherwise, we'll open two instances, one for the state we only need
-	// locally, and the other for things we want to ensure are replicated.
-	dbs.graphDB, err = channeldb.CreateWithBackend(
-		databaseBackends.GraphDB,
+	dbOptions := []channeldb.OptionModifier{
 		channeldb.OptionSetRejectCacheSize(cfg.Caches.RejectCacheSize),
 		channeldb.OptionSetChannelCacheSize(cfg.Caches.ChannelCacheSize),
 		channeldb.OptionSetBatchCommitInterval(cfg.DB.BatchCommitInterval),
 		channeldb.OptionDryRunMigration(cfg.DryRunMigration),
+	}
+
+	// We want to pre-allocate the channel graph cache according to what we
+	// expect for mainnet to speed up memory allocation.
+	if cfg.ActiveNetParams.Name == chaincfg.MainNetParams.Name {
+		dbOptions = append(
+			dbOptions, channeldb.OptionSetPreAllocCacheNumNodes(
+				channeldb.DefaultPreAllocCacheNumNodes,
+			),
+		)
+	}
+
+	// Otherwise, we'll open two instances, one for the state we only need
+	// locally, and the other for things we want to ensure are replicated.
+	dbs.graphDB, err = channeldb.CreateWithBackend(
+		databaseBackends.GraphDB, dbOptions...,
 	)
 	switch {
 	// Give the DB a chance to dry run the migration. Since we know that
