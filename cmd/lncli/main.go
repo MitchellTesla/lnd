@@ -327,6 +327,7 @@ func main() {
 	}
 	app.Commands = []cli.Command{
 		createCommand,
+		createWatchOnlyCommand,
 		unlockCommand,
 		changePasswordCommand,
 		newAddressCommand,
@@ -384,6 +385,8 @@ func main() {
 		profileSubCommand,
 		getStateCommand,
 		deletePaymentsCommand,
+		sendCustomCommand,
+		subscribeCustomCommand,
 	}
 
 	// Add any extra commands determined by build flags.

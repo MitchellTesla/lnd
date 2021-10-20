@@ -568,6 +568,14 @@ func MainRPCServerPermissions() map[string][]bakery.Op {
 			Entity: "macaroon",
 			Action: "write",
 		}},
+		"/lnrpc.Lightning/SendCustomMessage": {{
+			Entity: "offchain",
+			Action: "write",
+		}},
+		"/lnrpc.Lightning/SubscribeCustomMessages": {{
+			Entity: "offchain",
+			Action: "read",
+		}},
 	}
 }
 
@@ -1037,7 +1045,7 @@ func (r *rpcServer) sendCoinsOnChain(paymentMap map[string]int64,
 		return nil, err
 	}
 
-	// If that checks out, we're failry confident that creating sending to
+	// If that checks out, we're fairly confident that creating sending to
 	// these outputs will keep the wallet balance above the reserve.
 	tx, err := r.server.cc.Wallet.SendOutputs(
 		outputs, feeRate, minConfs, label,
@@ -3017,6 +3025,13 @@ func (r *rpcServer) WalletBalance(ctx context.Context,
 			}
 
 		default:
+		}
+
+		// There now also are the accounts for the internal channel
+		// related keys. We skip those as they'll never have any direct
+		// balance.
+		if account.KeyScope.Purpose == keychain.BIP0043Purpose {
+			continue
 		}
 
 		// Get total balance, from txs that have >= 0 confirmations.
@@ -7318,4 +7333,60 @@ func (r *rpcServer) RegisterRPCMiddleware(
 	defer r.interceptorChain.RemoveMiddleware(registerMsg.MiddlewareName)
 
 	return middleware.Run()
+}
+
+// SendCustomMessage sends a custom peer message.
+func (r *rpcServer) SendCustomMessage(ctx context.Context, req *lnrpc.SendCustomMessageRequest) (
+	*lnrpc.SendCustomMessageResponse, error) {
+
+	peer, err := route.NewVertexFromBytes(req.Peer)
+	if err != nil {
+		return nil, err
+	}
+
+	err = r.server.SendCustomMessage(
+		peer, lnwire.MessageType(req.Type), req.Data,
+	)
+	switch {
+	case err == ErrPeerNotConnected:
+		return nil, status.Error(codes.NotFound, err.Error())
+	case err != nil:
+		return nil, err
+	}
+
+	return &lnrpc.SendCustomMessageResponse{}, nil
+}
+
+// SubscribeCustomMessages subscribes to a stream of incoming custom peer
+// messages.
+func (r *rpcServer) SubscribeCustomMessages(req *lnrpc.SubscribeCustomMessagesRequest,
+	server lnrpc.Lightning_SubscribeCustomMessagesServer) error {
+
+	client, err := r.server.SubscribeCustomMessages()
+	if err != nil {
+		return err
+	}
+	defer client.Cancel()
+
+	for {
+		select {
+		case <-client.Quit():
+			return errors.New("shutdown")
+
+		case <-server.Context().Done():
+			return server.Context().Err()
+
+		case update := <-client.Updates():
+			customMsg := update.(*CustomMessage)
+
+			err := server.Send(&lnrpc.CustomMessage{
+				Peer: customMsg.Peer[:],
+				Data: customMsg.Msg.Data,
+				Type: uint32(customMsg.Msg.Type),
+			})
+			if err != nil {
+				return err
+			}
+		}
+	}
 }

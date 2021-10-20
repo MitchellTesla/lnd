@@ -9,10 +9,9 @@ require (
 	github.com/btcsuite/btclog v0.0.0-20170628155309-84c8d2346e9f
 	github.com/btcsuite/btcutil v1.0.3-0.20210527170813-e2ba6805a890
 	github.com/btcsuite/btcutil/psbt v1.0.3-0.20210527170813-e2ba6805a890
-	github.com/btcsuite/btcwallet v0.12.1-0.20210826004415-4ef582f76b02
+	github.com/btcsuite/btcwallet v0.12.1-0.20211008000044-541a8512ccfe
 	github.com/btcsuite/btcwallet/wallet/txauthor v1.1.0
 	github.com/btcsuite/btcwallet/wallet/txrules v1.1.0
-	github.com/btcsuite/btcwallet/wallet/txsizes v1.1.0 // indirect
 	github.com/btcsuite/btcwallet/walletdb v1.3.6-0.20210803004036-eebed51155ec
 	github.com/btcsuite/btcwallet/wtxmgr v1.3.1-0.20210822222949-9b5a201c344c
 	github.com/coreos/go-systemd v0.0.0-20190719114852-fd7a80b32e1f
@@ -41,12 +40,12 @@ require (
 	github.com/lightninglabs/neutrino v0.12.3
 	github.com/lightninglabs/protobuf-hex-display v1.4.3-hex-display
 	github.com/lightningnetwork/lightning-onion v1.0.2-0.20210520211913-522b799e65b1
-	github.com/lightningnetwork/lnd/cert v1.0.3
-	github.com/lightningnetwork/lnd/clock v1.0.1
-	github.com/lightningnetwork/lnd/healthcheck v1.0.2
-	github.com/lightningnetwork/lnd/kvdb v1.1.0
-	github.com/lightningnetwork/lnd/queue v1.0.4
-	github.com/lightningnetwork/lnd/ticker v1.0.0
+	github.com/lightningnetwork/lnd/cert v1.1.0
+	github.com/lightningnetwork/lnd/clock v1.1.0
+	github.com/lightningnetwork/lnd/healthcheck v1.1.0
+	github.com/lightningnetwork/lnd/kvdb v1.2.0
+	github.com/lightningnetwork/lnd/queue v1.1.0
+	github.com/lightningnetwork/lnd/ticker v1.1.0
 	github.com/ltcsuite/ltcd v0.0.0-20190101042124-f37f8bf35796
 	github.com/mattn/go-runewidth v0.0.9 // indirect
 	github.com/miekg/dns v1.1.43

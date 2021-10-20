@@ -445,7 +445,7 @@ func (m *mockUpdateHandler) Bandwidth() lnwire.MilliSatoshi { return 0 }
 func (m *mockUpdateHandler) EligibleToForward() bool { return false }
 
 // MayAddOutgoingHtlc currently returns nil.
-func (m *mockUpdateHandler) MayAddOutgoingHtlc() error { return nil }
+func (m *mockUpdateHandler) MayAddOutgoingHtlc(lnwire.MilliSatoshi) error { return nil }
 
 // ShutdownIfChannelClean currently returns nil.
 func (m *mockUpdateHandler) ShutdownIfChannelClean() error { return nil }
@@ -460,12 +460,16 @@ type mockMessageConn struct {
 
 	// writtenMessages is a channel that our mock pushes written messages into.
 	writtenMessages chan []byte
+
+	readMessages   chan []byte
+	curReadMessage []byte
 }
 
 func newMockConn(t *testing.T, expectedMessages int) *mockMessageConn {
 	return &mockMessageConn{
 		t:               t,
 		writtenMessages: make(chan []byte, expectedMessages),
+		readMessages:    make(chan []byte, 1),
 	}
 }
 
@@ -501,4 +505,17 @@ func (m *mockMessageConn) assertWrite(expected []byte) {
 	case <-time.After(timeout):
 		m.t.Fatalf("timeout waiting for write: %v", expected)
 	}
+}
+
+func (m *mockMessageConn) SetReadDeadline(t time.Time) error {
+	return nil
+}
+
+func (m *mockMessageConn) ReadNextHeader() (uint32, error) {
+	m.curReadMessage = <-m.readMessages
+	return uint32(len(m.curReadMessage)), nil
+}
+
+func (m *mockMessageConn) ReadNextBody(buf []byte) ([]byte, error) {
+	return m.curReadMessage, nil
 }
