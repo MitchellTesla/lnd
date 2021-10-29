@@ -304,6 +304,10 @@ var allTestCases = []*testCase{
 		test: testSendPaymentAMPInvoice,
 	},
 	{
+		name: "sendpayment amp invoice repeat",
+		test: testSendPaymentAMPInvoiceRepeat,
+	},
+	{
 		name: "send multi path payment",
 		test: testSendMultiPathPayment,
 	},
@@ -312,8 +316,12 @@ var allTestCases = []*testCase{
 		test: testRestAPI,
 	},
 	{
-		name: "intercept forwarded htlc packets",
-		test: testForwardInterceptor,
+		name: "forward interceptor",
+		test: testForwardInterceptorBasic,
+	},
+	{
+		name: "forward interceptor dedup htlcs",
+		test: testForwardInterceptorDedupHtlc,
 	},
 	{
 		name: "wumbo channels",
