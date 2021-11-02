@@ -460,6 +460,8 @@ messages directly. There is no routing/path finding involved.
 
 * [Fixed flake that occurred with the switch dust forwarding test under the data race unit build.](https://github.com/lightningnetwork/lnd/pull/5828)
 
+* [Run channeldb tests on postgres](https://github.com/lightningnetwork/lnd/pull/5550)
+
 ## Database
 
 * [Ensure single writer for legacy
@@ -586,6 +588,9 @@ messages directly. There is no routing/path finding involved.
 
 * [Do not error log when an invoice that has been canceled and GC'd is expired](
   https://github.com/lightningnetwork/lnd/pull/5913)
+
+* [Don't print bucket names with special characters when compacting](
+  https://github.com/lightningnetwork/lnd/pull/5878)
 
 ## Documentation 
 
