@@ -325,6 +325,9 @@ messages directly. There is no routing/path finding involved.
 
 * [CI has been upgraded to build against bitcoind 22.0](https://github.com/lightningnetwork/lnd/pull/5928)
 
+* [Update to the latest neutrino version](https://github.com/lightningnetwork/lnd/pull/5933)
+
+
 ## Documentation
 
 * [Outdated warning about unsupported pruning was replaced with clarification that LND **does**
@@ -366,6 +369,8 @@ messages directly. There is no routing/path finding involved.
   calling lnd, when needed.
 
 * Using `go get` to install go executables is now deprecated. Migrate to `go install` our lnrpc proto dockerfile [Migrate `go get` to `go install`](https://github.com/lightningnetwork/lnd/pull/5879)
+
+* [The premature update map has been revamped using an LRU cache](https://github.com/lightningnetwork/lnd/pull/5902)
 
 ## Code Health
 
@@ -515,6 +520,11 @@ messages directly. There is no routing/path finding involved.
   buffer each time we decrypt an incoming message, as we
   recycle these buffers in the peer.
 
+* [The `DescribeGraph` and `GetNetworkInfo` calls have been
+  optimized](https://github.com/lightningnetwork/lnd/pull/5873) by caching the
+  response periodically, or using the new channel graph cache directly.  This
+  should significantly cut down on the garbage these two calls generate.
+
 ## Log system
 
 * [Save compressed log files from logrorate during 
@@ -599,6 +609,14 @@ messages directly. There is no routing/path finding involved.
 
 * [Fix pathfinding crash when inbound policy is unknown](
   https://github.com/lightningnetwork/lnd/pull/5922)
+
+* [Stagger connection attempts to multi-address peers to ensure that the peer
+   doesn't close the first successful connection in favour of the next if 
+   the first one was successful](
+   https://github.com/lightningnetwork/lnd/pull/5925)
+
+* [Fixed an issue with external listeners and the `--noseedbackup` development
+  flag](https://github.com/lightningnetwork/lnd/pull/5930).
 
 ## Documentation 
 
