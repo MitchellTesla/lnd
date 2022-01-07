@@ -10,6 +10,19 @@
 * Add [auto-generated command-line completions](https://github.com/lightningnetwork/lnd/pull/4177) 
   for Fish shell.  
 
+## Bug Fixes
+
+* [Fixed an inactive invoice subscription not removed from invoice
+  registry](https://github.com/lightningnetwork/lnd/pull/6053). When an invoice
+  subscription is created and canceled immediately, it could be left uncleaned
+  due to the cancel signal is processed before the creation. It is now properly
+  handled by moving creation before deletion.   
+
+* When the block height+delta specified by a network message is greater than
+  the gossiper's best height, it will be considered as premature and ignored.
+  [These premature messages are now saved into a cache and processed once the
+  height has reached.](https://github.com/lightningnetwork/lnd/pull/6054)
+
 ## Misc
 
 * [An example systemd service file](https://github.com/lightningnetwork/lnd/pull/6033)
@@ -18,6 +31,12 @@
 
 * [Allow disabling migrations if the database backend passed to `channeldb` was
   opened in read-only mode](https://github.com/lightningnetwork/lnd/pull/6084).
+
+* [Disable compiler optimizations](https://github.com/lightningnetwork/lnd/pull/6105)
+  when building `lnd-debug` and `lncli-debug`. It helps when stepping through the code
+  with a debugger like Delve.
+  
+* A new command `lncli leaseoutput` was [added](https://github.com/lightningnetwork/lnd/pull/5964).
 
 ## RPC Server
 
@@ -29,6 +48,7 @@
 ## Documentation
 
 * Improved instructions on [how to build lnd for mobile](https://github.com/lightningnetwork/lnd/pull/6085).
+* [Log force-close related messages on "info" level](https://github.com/lightningnetwork/lnd/pull/6124).
 
 ## Code Health
 
@@ -39,6 +59,11 @@
 # Contributors (Alphabetical Order)
 
 * Andreas Schjønhaug
+* Carsten Otto
 * Daniel McNally
 * ErikEk
+* Joost Jager
+* Liviu
 * Torkel Rogstad
+* Vsevolod Kaganovych
+* Yong Yu
