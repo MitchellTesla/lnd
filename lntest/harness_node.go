@@ -82,6 +82,10 @@ type BackendConfig interface {
 
 	// Name returns the name of the backend type.
 	Name() string
+
+	// Credentials returns the rpc username, password and host for the
+	// backend.
+	Credentials() (string, string, string, error)
 }
 
 // NodeConfig is the basic interface a node configuration must implement.
@@ -222,7 +226,6 @@ func (cfg *BaseNodeConfig) GenArgs() []string {
 		fmt.Sprintf("--datadir=%v", cfg.DataDir),
 		fmt.Sprintf("--tlscertpath=%v", cfg.TLSCertPath),
 		fmt.Sprintf("--tlskeypath=%v", cfg.TLSKeyPath),
-		fmt.Sprintf("--configfile=%v", cfg.DataDir),
 		fmt.Sprintf("--adminmacaroonpath=%v", cfg.AdminMacPath),
 		fmt.Sprintf("--readonlymacaroonpath=%v", cfg.ReadMacPath),
 		fmt.Sprintf("--invoicemacaroonpath=%v", cfg.InvoiceMacPath),

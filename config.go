@@ -266,7 +266,7 @@ type Config struct {
 	RawRESTListeners  []string `long:"restlisten" description:"Add an interface/port/socket to listen for REST connections"`
 	RawListeners      []string `long:"listen" description:"Add an interface/port to listen for peer connections"`
 	RawExternalIPs    []string `long:"externalip" description:"Add an ip:port to the list of local addresses we claim to listen on to peers. If a port is not specified, the default (9735) will be used regardless of other parameters"`
-	ExternalHosts     []string `long:"externalhosts" description:"A set of hosts that should be periodically resolved to announce IPs for"`
+	ExternalHosts     []string `long:"externalhosts" description:"Add a hostname:port that should be periodically resolved to announce IPs for. If a port is not specified, the default (9735) will be used."`
 	RPCListeners      []net.Addr
 	RESTListeners     []net.Addr
 	RestCORS          []string `long:"restcors" description:"Add an ip:port/hostname to allow cross origin access from. To allow all origins, set as \"*\"."`
@@ -633,11 +633,22 @@ func LoadConfig(interceptor signal.Interceptor) (*Config, error) {
 	// file within it.
 	configFileDir := CleanAndExpandPath(preCfg.LndDir)
 	configFilePath := CleanAndExpandPath(preCfg.ConfigFile)
-	if configFileDir != DefaultLndDir {
-		if configFilePath == DefaultConfigFile {
-			configFilePath = filepath.Join(
-				configFileDir, lncfg.DefaultConfigFilename,
-			)
+	switch {
+	// User specified --lnddir but no --configfile. Update the config file
+	// path to the lnd config directory, but don't require it to exist.
+	case configFileDir != DefaultLndDir &&
+		configFilePath == DefaultConfigFile:
+
+		configFilePath = filepath.Join(
+			configFileDir, lncfg.DefaultConfigFilename,
+		)
+
+	// User did specify an explicit --configfile, so we check that it does
+	// exist under that path to avoid surprises.
+	case configFilePath != DefaultConfigFile:
+		if !fileExists(configFilePath) {
+			return nil, fmt.Errorf("specified config file does "+
+				"not exist in %s", configFilePath)
 		}
 	}
 

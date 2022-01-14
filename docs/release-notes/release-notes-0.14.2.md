@@ -67,6 +67,11 @@ connection from the watch-only node.
   
 * [Fix Postgres itests max connections](https://github.com/lightningnetwork/lnd/pull/6116)
 
+* [Fix duplicate db connection close](https://github.com/lightningnetwork/lnd/pull/6140)
+
+* [Fix a memory leak introduced by the new ping-header p2p enhancement](https://github.com/lightningnetwork/lnd/pull/6144]
+
+
 ## RPC Server
 
 * [ChanStatusFlags is now
@@ -76,12 +81,17 @@ connection from the watch-only node.
 * [Fix missing label on streamed
   transactions](https://github.com/lightningnetwork/lnd/pull/5854).
 
+* [Closing txid is now
+  exposed](https://github.com/lightningnetwork/lnd/pull/6146) inside
+  WaitingCloseResp from calling `PendingChannels`.
+
 # Contributors (Alphabetical Order)
 
 * Andras Banki-Horvath
 * Bjarne Magnussen
 * Elle Mouton
 * Harsha Goli
+* Joost Jager
 * Martin Habovštiak
 * Naveen Srinivasan
 * Oliver Gugger
