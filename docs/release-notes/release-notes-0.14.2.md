@@ -41,6 +41,9 @@ Postgres](https://github.com/lightningnetwork/lnd/pull/6111)
 
 ## Bug fixes
 
+* [A new resolver for breach closes was introduced that handles sweeping
+  anchor outputs and failing back HTLCs.](https://github.com/lightningnetwork/lnd/pull/6158)
+
 * [Return the nearest known fee rate when a given conf target cannot be found
   from Web API fee estimator.](https://github.com/lightningnetwork/lnd/pull/6062)
 
@@ -78,6 +81,8 @@ Postgres](https://github.com/lightningnetwork/lnd/pull/6111)
 
 * [Fix an issue that would prevent very old nodes from starting up due to lack of a historical channel bucket](https://github.com/lightningnetwork/lnd/pull/6159)
 
+* [Fixes a bug that would cause incorrect rounding when translating a decimal fee rate to ppm](https://github.com/lightningnetwork/lnd/pull/6200)
+
 
 ## RPC Server
 
@@ -88,9 +93,19 @@ Postgres](https://github.com/lightningnetwork/lnd/pull/6111)
 * [Fix missing label on streamed
   transactions](https://github.com/lightningnetwork/lnd/pull/5854).
 
+* [The `fee_rate_ppm` parameter/argument was added to  
+  update channel policy](https://github.com/lightningnetwork/lnd/pull/5711)
+  to prevent truncation error with tiny fee rates.
+
 * [Closing txid is now
   exposed](https://github.com/lightningnetwork/lnd/pull/6146) inside
   WaitingCloseResp from calling `PendingChannels`.
+
+* [CustomCaveatCondition is now properly
+  set](https://github.com/lightningnetwork/lnd/pull/6185) on
+  `RPCMiddlewareRequest` messages.
+
+* [Adds a new FeeRatePpm to the UpdateChanPolicy call to allow fee rate expression in the native protocol unit](https://github.com/lightningnetwork/lnd/pull/6200)
 
 
 ## Routing
@@ -99,12 +114,18 @@ Postgres](https://github.com/lightningnetwork/lnd/pull/6111)
   history](https://github.com/lightningnetwork/lnd/pull/6180) by adding the `force`
   flag to the `XImportMissionControl` RPC call.
 
+## Documentation
+
+* [General improvements to the mobile documentation](https://github.com/lightningnetwork/lnd/pull/6181). 
 
 # Contributors (Alphabetical Order)
 
 * Andras Banki-Horvath
+* Andreas Schjønhaug
 * Bjarne Magnussen
+* Daniel McNally
 * Elle Mouton
+* Erik Ek
 * Harsha Goli
 * Joost Jager
 * Martin Habovštiak
