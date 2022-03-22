@@ -48,6 +48,12 @@
   validation](https://github.com/lightningnetwork/lnd/pull/6314) when calling
   `NewSigFromRawSignature`.
 
+* [Fixed deadlock in invoice
+  registry](https://github.com/lightningnetwork/lnd/pull/6332).
+
+* [Fixed an issue that would cause wallet UTXO state to be incorrect if a 3rd
+  party sweeps our anchor
+  output](https://github.com/lightningnetwork/lnd/pull/6274).
 
 ## Misc
 
@@ -71,6 +77,8 @@
 * [A nightly build of the `lnd` docker image is now created
   automatically](https://github.com/lightningnetwork/lnd/pull/6160).
   
+* Add default values to [walletrpc.ListUnspent RPC call](https://github.com/lightningnetwork/lnd/pull/6190).
+
 * [Add `.vs/` folder to `.gitignore`](https://github.com/lightningnetwork/lnd/pull/6178). 
 
 * [Chain backend healthchecks disabled for --nochainbackend mode](https://github.com/lightningnetwork/lnd/pull/6184)
@@ -100,6 +108,10 @@
   interceptor API to provide more control over failure messages. With this
   change, it allows encrypted failure messages to be returned to the sender.
   Additionally it is possible to signal a malformed htlc.
+
+* Add an [always on](https://github.com/lightningnetwork/lnd/pull/6232) mode to
+  the HTLC interceptor API. This enables interception applications where every
+  packet must be intercepted.
 
 ## Database
 
@@ -151,6 +163,8 @@ gRPC performance metrics (latency to process `GetInfo`, etc)](https://github.com
 * [`ChannelLink` in the `htlcswitch` now performs a 2-way handoff instead of a 1-way handoff with its `ChannelArbitrator`.](https://github.com/lightningnetwork/lnd/pull/6221)
 
 * [The channel-commit-interval is now clamped to a reasonable timeframe of 1h.](https://github.com/lightningnetwork/lnd/pull/6220)
+
+* [A function in the gossiper `processNetworkAnnouncements` has been refactored for readability and for future deduplication efforts.](https://github.com/lightningnetwork/lnd/pull/6278)
 
 # Contributors (Alphabetical Order)
 

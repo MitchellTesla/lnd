@@ -1078,13 +1078,13 @@ func (r *rpcServer) sendCoinsOnChain(paymentMap map[string]int64,
 	return &txHash, nil
 }
 
-// ListUnspent returns useful information about each unspent output owned by the
-// wallet, as reported by the underlying `ListUnspentWitness`; the information
-// returned is: outpoint, amount in satoshis, address, address type,
-// scriptPubKey in hex and number of confirmations.  The result is filtered to
-// contain outputs whose number of confirmations is between a minimum and
-// maximum number of confirmations specified by the user, with 0 meaning
-// unconfirmed.
+// ListUnspent returns useful information about each unspent output owned by
+// the wallet, as reported by the underlying `ListUnspentWitness`; the
+// information returned is: outpoint, amount in satoshis, address, address
+// type, scriptPubKey in hex and number of confirmations.  The result is
+// filtered to contain outputs whose number of confirmations is between a
+// minimum and maximum number of confirmations specified by the user, with
+// 0 meaning unconfirmed.
 func (r *rpcServer) ListUnspent(ctx context.Context,
 	in *lnrpc.ListUnspentRequest) (*lnrpc.ListUnspentResponse, error) {
 
@@ -3087,6 +3087,27 @@ func (r *rpcServer) WalletBalance(ctx context.Context,
 		}
 	}
 
+	// Now that we have the base balance accounted for with each account,
+	// we'll look at the set of locked UTXOs to tally that as well. If we
+	// don't display this, then anytime we attempt a funding reservation,
+	// the outputs will chose as being "gone" until they're confirmed on
+	// chain.
+	var lockedBalance btcutil.Amount
+	leases, err := r.server.cc.Wallet.ListLeasedOutputs()
+	if err != nil {
+		return nil, err
+	}
+	for _, leasedOutput := range leases {
+		utxoInfo, err := r.server.cc.Wallet.FetchInputInfo(
+			&leasedOutput.Outpoint,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		lockedBalance += utxoInfo.Value
+	}
+
 	rpcsLog.Debugf("[walletbalance] Total balance=%v (confirmed=%v, "+
 		"unconfirmed=%v)", totalBalance, confirmedBalance,
 		unconfirmedBalance)
@@ -3095,6 +3116,7 @@ func (r *rpcServer) WalletBalance(ctx context.Context,
 		TotalBalance:       int64(totalBalance),
 		ConfirmedBalance:   int64(confirmedBalance),
 		UnconfirmedBalance: int64(unconfirmedBalance),
+		LockedBalance:      int64(lockedBalance),
 		AccountBalance:     rpcAccountBalances,
 	}, nil
 }
