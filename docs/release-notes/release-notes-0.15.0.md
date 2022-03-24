@@ -55,6 +55,8 @@
   party sweeps our anchor
   output](https://github.com/lightningnetwork/lnd/pull/6274).
 
+* [Fixed node shutdown in forward interceptor itests](https://github.com/lightningnetwork/lnd/pull/6362).
+
 ## Misc
 
 * [An example systemd service file](https://github.com/lightningnetwork/lnd/pull/6033)
@@ -98,6 +100,17 @@
   modules were integrated into `lnd` as a preparation for basic Taproot
   support](https://github.com/lightningnetwork/lnd/pull/6285).
 
+* [Make etcd leader election session
+  TTL](https://github.com/lightningnetwork/lnd/pull/6342) configurable.
+
+* [Fix race condition in the htlc interceptor unit
+  test](https://github.com/lightningnetwork/lnd/pull/6353).
+
+* [A new config option, `pending-commit-interval` is
+  added](https://github.com/lightningnetwork/lnd/pull/6186). This value
+  specifies the maximum duration it allows for a remote peer to respond to a
+  locally initiated commitment update.
+
 ## RPC Server
 
 * [Add value to the field
@@ -118,6 +131,10 @@
 * Add an [always on](https://github.com/lightningnetwork/lnd/pull/6232) mode to
   the HTLC interceptor API. This enables interception applications where every
   packet must be intercepted.
+
+* Add [destination output information](https://github.com/lightningnetwork/lnd/pull/5476)
+  to the transaction structure returned from the RPC `GetTransactions` and when
+  subscribed with `SubscribeTransactions`.
 
 ## Database
 
@@ -179,6 +196,7 @@ gRPC performance metrics (latency to process `GetInfo`, etc)](https://github.com
 * Andreas Schjønhaug
 * asvdf
 * bitromortac
+* Bjarne Magnussen
 * BTCparadigm
 * Carla Kirk-Cohen
 * Carsten Otto
