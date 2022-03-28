@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
 	"github.com/btcsuite/btcwallet/wallet"
 	"github.com/davecgh/go-spew/spew"
 	"github.com/lightningnetwork/lnd/chainreg"
@@ -236,23 +236,22 @@ func testSphinxReplayPersistence(net *lntest.NetworkHarness, t *harnessTest) {
 	}
 
 	// Wait for all channels to be recognized and advertized.
-	ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
-	err = carol.WaitForNetworkChannelOpen(ctxt, chanPoint)
+	err = carol.WaitForNetworkChannelOpen(chanPoint)
 	if err != nil {
 		t.Fatalf("alice didn't advertise channel before "+
 			"timeout: %v", err)
 	}
-	err = dave.WaitForNetworkChannelOpen(ctxt, chanPoint)
+	err = dave.WaitForNetworkChannelOpen(chanPoint)
 	if err != nil {
 		t.Fatalf("bob didn't advertise channel before "+
 			"timeout: %v", err)
 	}
-	err = carol.WaitForNetworkChannelOpen(ctxt, chanPointFC)
+	err = carol.WaitForNetworkChannelOpen(chanPointFC)
 	if err != nil {
 		t.Fatalf("alice didn't advertise channel before "+
 			"timeout: %v", err)
 	}
-	err = fred.WaitForNetworkChannelOpen(ctxt, chanPointFC)
+	err = fred.WaitForNetworkChannelOpen(chanPointFC)
 	if err != nil {
 		t.Fatalf("bob didn't advertise channel before "+
 			"timeout: %v", err)
@@ -386,15 +385,13 @@ func testListChannels(net *lntest.NetworkHarness, t *harnessTest) {
 
 	// Wait for Alice and Bob to receive the channel edge from the
 	// funding manager.
-	ctxt, _ := context.WithTimeout(ctxb, defaultTimeout)
-	err := alice.WaitForNetworkChannelOpen(ctxt, chanPoint)
+	err := alice.WaitForNetworkChannelOpen(chanPoint)
 	if err != nil {
 		t.Fatalf("alice didn't see the alice->bob channel before "+
 			"timeout: %v", err)
 	}
 
-	ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
-	err = bob.WaitForNetworkChannelOpen(ctxt, chanPoint)
+	err = bob.WaitForNetworkChannelOpen(chanPoint)
 	if err != nil {
 		t.Fatalf("bob didn't see the bob->alice channel before "+
 			"timeout: %v", err)
@@ -407,8 +404,7 @@ func testListChannels(net *lntest.NetworkHarness, t *harnessTest) {
 
 	// Get the ListChannel response from Alice.
 	listReq := &lnrpc.ListChannelsRequest{}
-	ctxb = context.Background()
-	ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
+	ctxt, _ := context.WithTimeout(ctxb, defaultTimeout)
 	resp, err := alice.ListChannels(ctxt, listReq)
 	if err != nil {
 		t.Fatalf("unable to query for %s's channel list: %v",
@@ -477,15 +473,12 @@ func testListChannels(net *lntest.NetworkHarness, t *harnessTest) {
 	assertChannelConstraintsEqual(
 		t, aliceChannel.RemoteConstraints, bobChannel.LocalConstraints,
 	)
-
 }
 
 // testMaxPendingChannels checks that error is returned from remote peer if
 // max pending channel number was exceeded and that '--maxpendingchannels' flag
 // exists and works properly.
 func testMaxPendingChannels(net *lntest.NetworkHarness, t *harnessTest) {
-	ctxb := context.Background()
-
 	maxPendingChannels := lncfg.DefaultMaxPendingChannels + 1
 	amount := funding.MaxBtcFundingAmount
 
@@ -529,6 +522,7 @@ func testMaxPendingChannels(net *lntest.NetworkHarness, t *harnessTest) {
 	} else if !strings.Contains(
 		err.Error(), lnwire.ErrMaxPendingChannels.Error(),
 	) {
+
 		t.Fatalf("not expected error was received: %v", err)
 	}
 
@@ -557,8 +551,7 @@ func testMaxPendingChannels(net *lntest.NetworkHarness, t *harnessTest) {
 		// Ensure that the funding transaction enters a block, and is
 		// properly advertised by Alice.
 		assertTxInBlock(t, block, fundingTxID)
-		ctxt, _ := context.WithTimeout(ctxb, defaultTimeout)
-		err = net.Alice.WaitForNetworkChannelOpen(ctxt, fundingChanPoint)
+		err = net.Alice.WaitForNetworkChannelOpen(fundingChanPoint)
 		if err != nil {
 			t.Fatalf("channel not seen on network before "+
 				"timeout: %v", err)
@@ -780,7 +773,6 @@ func testGarbageCollectLinkNodes(net *lntest.NetworkHarness, t *harnessTest) {
 		predErr = checkNumForceClosedChannels(pendingChanResp, 0)
 
 		return predErr == nil
-
 	}, defaultTimeout)
 	if err != nil {
 		t.Fatalf("channels not marked as fully resolved: %v", predErr)
@@ -878,8 +870,7 @@ func testDataLossProtection(net *lntest.NetworkHarness, t *harnessTest) {
 
 		// Wait for Carol to receive the channel edge from the funding
 		// manager.
-		ctxt, _ := context.WithTimeout(ctxb, defaultTimeout)
-		err = carol.WaitForNetworkChannelOpen(ctxt, chanPoint)
+		err = carol.WaitForNetworkChannelOpen(chanPoint)
 		if err != nil {
 			t.Fatalf("carol didn't see the carol->%s channel "+
 				"before timeout: %v", node.Name(), err)
@@ -975,7 +966,7 @@ func testDataLossProtection(net *lntest.NetworkHarness, t *harnessTest) {
 		}
 
 		balReq := &lnrpc.WalletBalanceRequest{}
-		ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
+		ctxt, _ := context.WithTimeout(ctxb, defaultTimeout)
 		balResp, err := node.WalletBalance(ctxt, balReq)
 		if err != nil {
 			t.Fatalf("unable to get dave's balance: %v", err)
@@ -1102,7 +1093,7 @@ func testDataLossProtection(net *lntest.NetworkHarness, t *harnessTest) {
 		daveBalance := daveBalResp.ConfirmedBalance
 		if daveBalance <= daveStartingBalance {
 			return fmt.Errorf("expected dave to have balance "+
-				"above %d, intead had %v", daveStartingBalance,
+				"above %d, instead had %v", daveStartingBalance,
 				daveBalance)
 		}
 
@@ -1352,16 +1343,15 @@ func testAbandonChannel(net *lntest.NetworkHarness, t *harnessTest) {
 	chanPointStr := fmt.Sprintf("%v:%v", txid, chanPoint.OutputIndex)
 
 	// Wait for channel to be confirmed open.
-	ctxt, _ := context.WithTimeout(ctxb, defaultTimeout)
-	err = net.Alice.WaitForNetworkChannelOpen(ctxt, chanPoint)
+	err = net.Alice.WaitForNetworkChannelOpen(chanPoint)
 	require.NoError(t.t, err, "alice wait for network channel open")
-	err = net.Bob.WaitForNetworkChannelOpen(ctxt, chanPoint)
+	err = net.Bob.WaitForNetworkChannelOpen(chanPoint)
 	require.NoError(t.t, err, "bob wait for network channel open")
 
 	// Now that the channel is open, we'll obtain its channel ID real quick
 	// so we can use it to query the graph below.
 	listReq := &lnrpc.ListChannelsRequest{}
-	ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
+	ctxt, _ := context.WithTimeout(ctxb, defaultTimeout)
 	aliceChannelList, err := net.Alice.ListChannels(ctxt, listReq)
 	require.NoError(t.t, err)
 	var chanID uint64

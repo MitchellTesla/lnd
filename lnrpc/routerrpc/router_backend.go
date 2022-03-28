@@ -9,10 +9,10 @@ import (
 	math "math"
 	"time"
 
-	"github.com/btcsuite/btcd/btcec"
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/feature"
 	"github.com/lightningnetwork/lnd/htlcswitch"
@@ -31,7 +31,7 @@ const (
 	// for MPP when the user is attempting to send a payment.
 	//
 	// TODO(roasbeef): make this value dynamic based on expected number of
-	// attempts for given amount
+	// attempts for given amount.
 	DefaultMaxParts = 16
 )
 
@@ -115,7 +115,7 @@ type MissionControl interface {
 	// ImportHistory imports the mission control snapshot to our internal
 	// state. This import will only be applied in-memory, and will not be
 	// persisted across restarts.
-	ImportHistory(*routing.MissionControlSnapshot) error
+	ImportHistory(snapshot *routing.MissionControlSnapshot, force bool) error
 
 	// GetPairHistorySnapshot returns the stored history for a given node
 	// pair.
@@ -132,7 +132,7 @@ type MissionControl interface {
 
 // QueryRoutes attempts to query the daemons' Channel Router for a possible
 // route to a target destination capable of carrying a specific amount of
-// satoshis within the route's flow. The retuned route contains the full
+// satoshis within the route's flow. The returned route contains the full
 // details required to craft and send an HTLC, also including the necessary
 // information that should be present within the Sphinx packet encapsulated
 // within the HTLC.
@@ -661,11 +661,11 @@ func (r *RouterBackend) extractIntentFromSendRequest(
 				"cannot appear together")
 
 		case len(rpcPayReq.PaymentHash) > 0:
-			return nil, errors.New("dest and payment_hash " +
+			return nil, errors.New("payment_hash and payment_request " +
 				"cannot appear together")
 
 		case rpcPayReq.FinalCltvDelta != 0:
-			return nil, errors.New("dest and final_cltv_delta " +
+			return nil, errors.New("final_cltv_delta and payment_request " +
 				"cannot appear together")
 		}
 
@@ -927,7 +927,7 @@ func unmarshallHopHint(rpcHint *lnrpc.HopHint) (zpay32.HopHint, error) {
 		return zpay32.HopHint{}, err
 	}
 
-	pubkey, err := btcec.ParsePubKey(pubBytes, btcec.S256())
+	pubkey, err := btcec.ParsePubKey(pubBytes)
 	if err != nil {
 		return zpay32.HopHint{}, err
 	}
@@ -1008,7 +1008,6 @@ func UnmarshalMPP(reqMPP *lnrpc.MPPRecord) (*record.MPP, error) {
 	reqAddr := reqMPP.PaymentAddr
 
 	switch {
-
 	// No MPP fields were provided.
 	case reqTotal == 0 && len(reqAddr) == 0:
 		return nil, fmt.Errorf("missing total_msat and payment_addr")
@@ -1110,7 +1109,6 @@ func marshallHtlcFailure(failure *channeldb.HTLCFailInfo) (*lnrpc.Failure,
 	}
 
 	switch failure.Reason {
-
 	case channeldb.HTLCFailUnknown:
 		rpcFailure.Code = lnrpc.Failure_UNKNOWN_FAILURE
 
@@ -1191,7 +1189,6 @@ func marshallWireError(msg lnwire.FailureMessage,
 	response *lnrpc.Failure) error {
 
 	switch onionErr := msg.(type) {
-
 	case *lnwire.FailIncorrectDetails:
 		response.Code = lnrpc.Failure_INCORRECT_OR_UNKNOWN_PAYMENT_DETAILS
 		response.Height = onionErr.Height()
@@ -1412,7 +1409,6 @@ func marshallPaymentFailureReason(reason *channeldb.FailureReason) (
 	}
 
 	switch *reason {
-
 	case channeldb.FailureReasonTimeout:
 		return lnrpc.PaymentFailureReason_FAILURE_REASON_TIMEOUT, nil
 

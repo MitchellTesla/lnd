@@ -179,7 +179,7 @@ Arguments:
 
 `unit-cover`
 ------------
-Runs the unit test suite with test coverage, compiling the statisitics in
+Runs the unit test suite with test coverage, compiling the statistics in
 `profile.cov`.
 
 Arguments:
@@ -206,4 +206,3 @@ Related: [`unit`](#unit)
 
 [btcd]: https://github.com/btcsuite/btcd (github.com/btcsuite/btcd")
 [gometalinter]: https://gopkg.in/alecthomas/gometalinter.v1 (gopkg.in/alecthomas/gometalinter.v1)
-[goveralls]: https://github.com/mattn/goveralls (github.com/mattn/goveralls)

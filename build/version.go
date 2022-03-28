@@ -1,7 +1,7 @@
 // Copyright (c) 2013-2017 The btcsuite developers
 // Copyright (c) 2015-2016 The Decred developers
 // Heavily inspired by https://github.com/btcsuite/btcd/blob/master/version.go
-// Copyright (C) 2015-2017 The Lightning Network Developers
+// Copyright (C) 2015-2022 The Lightning Network Developers
 
 package build
 
@@ -26,7 +26,7 @@ var (
 	RawTags string
 
 	// GoVersion stores the go version that the executable was compiled
-	// with. This hsould be set using -ldflags during compilation.
+	// with. This should be set using -ldflags during compilation.
 	GoVersion string
 )
 
@@ -44,7 +44,7 @@ const (
 	AppMinor uint = 14
 
 	// AppPatch defines the application patch for this binary.
-	AppPatch uint = 00
+	AppPatch uint = 99
 
 	// AppPreRelease MUST only contain characters from semanticAlphabet
 	// per the semantic versioning spec.

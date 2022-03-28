@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
 	"github.com/lightningnetwork/lnd/chainreg"
 	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/routerrpc"
@@ -319,8 +319,6 @@ func (c *mppTestContext) shutdownNodes() {
 }
 
 func (c *mppTestContext) waitForChannels() {
-	ctxb := context.Background()
-
 	// Wait for all nodes to have seen all channels.
 	for _, chanPoint := range c.networkChans {
 		for _, node := range c.nodes {
@@ -333,8 +331,7 @@ func (c *mppTestContext) waitForChannels() {
 				Index: chanPoint.OutputIndex,
 			}
 
-			ctxt, _ := context.WithTimeout(ctxb, defaultTimeout)
-			err = node.WaitForNetworkChannelOpen(ctxt, chanPoint)
+			err = node.WaitForNetworkChannelOpen(chanPoint)
 			if err != nil {
 				c.t.Fatalf("(%v:%d): timeout waiting for "+
 					"channel(%s) open: %v",

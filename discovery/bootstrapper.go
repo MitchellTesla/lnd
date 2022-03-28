@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/btcsuite/btcd/btcec"
-	"github.com/btcsuite/btcutil/bech32"
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcutil/bech32"
 	"github.com/davecgh/go-spew/spew"
 	"github.com/lightningnetwork/lnd/autopilot"
 	"github.com/lightningnetwork/lnd/lnwire"
@@ -158,6 +158,7 @@ func (c *ChannelGraphBootstrapper) SampleNodeAddrs(numAddrs uint32,
 	// We'll merge the ignore map with our currently selected map in order
 	// to ensure we don't return any duplicate nodes.
 	for n := range ignore {
+		log.Tracef("Ignored node %x for bootstrapping", n)
 		c.tried[n] = struct{}{}
 	}
 
@@ -206,7 +207,7 @@ func (c *ChannelGraphBootstrapper) SampleNodeAddrs(numAddrs uint32,
 				}
 
 				nodePub, err := btcec.ParsePubKey(
-					nodePubKeyBytes[:], btcec.S256(),
+					nodePubKeyBytes[:],
 				)
 				if err != nil {
 					return err
@@ -307,12 +308,13 @@ var _ NetworkPeerBootstrapper = (*ChannelGraphBootstrapper)(nil)
 func NewDNSSeedBootstrapper(
 	seeds [][2]string, net tor.Net,
 	timeout time.Duration) NetworkPeerBootstrapper {
+
 	return &DNSSeedBootstrapper{dnsSeeds: seeds, net: net, timeout: timeout}
 }
 
 // fallBackSRVLookup attempts to manually query for SRV records we need to
 // properly bootstrap. We do this by querying the special record at the "soa."
-// sub-domain of supporting DNS servers. The retuned IP address will be the IP
+// sub-domain of supporting DNS servers. The returned IP address will be the IP
 // address of the authoritative DNS server. Once we have this IP address, we'll
 // connect manually over TCP to request the SRV record. This is necessary as
 // the records we return are currently too large for a class of resolvers,
@@ -360,7 +362,7 @@ func (d *DNSSeedBootstrapper) fallBackSRVLookup(soaShim string,
 			"received: %v", resp.Rcode)
 	}
 
-	// Retrieve the RR(s) of the Answer section, and covert to the format
+	// Retrieve the RR(s) of the Answer section, and convert to the format
 	// that net.LookupSRV would normally return.
 	var rrs []*net.SRV
 	for _, rr := range resp.Answer {
@@ -486,9 +488,7 @@ search:
 			if err != nil {
 				return nil, err
 			}
-			nodeKey, err := btcec.ParsePubKey(
-				nodeBytes, btcec.S256(),
-			)
+			nodeKey, err := btcec.ParsePubKey(nodeBytes)
 			if err != nil {
 				return nil, err
 			}

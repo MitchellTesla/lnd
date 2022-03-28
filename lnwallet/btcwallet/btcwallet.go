@@ -9,17 +9,15 @@ import (
 	"sync"
 	"time"
 
-	"github.com/btcsuite/btcd/btcec"
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/btcutil/hdkeychain"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
-	"github.com/btcsuite/btcutil/hdkeychain"
-	"github.com/btcsuite/btcutil/psbt"
 	"github.com/btcsuite/btcwallet/chain"
 	"github.com/btcsuite/btcwallet/waddrmgr"
-	"github.com/btcsuite/btcwallet/wallet"
 	base "github.com/btcsuite/btcwallet/wallet"
 	"github.com/btcsuite/btcwallet/wallet/txauthor"
 	"github.com/btcsuite/btcwallet/wallet/txrules"
@@ -57,6 +55,10 @@ var (
 	// waddrmgrNamespaceKey is the namespace key that the waddrmgr state is
 	// stored within the top-level waleltdb buckets of btcwallet.
 	waddrmgrNamespaceKey = []byte("waddrmgr")
+
+	// wtxmgrNamespaceKey is the namespace key that the wtxmgr state is
+	// stored within the top-level waleltdb buckets of btcwallet.
+	wtxmgrNamespaceKey = []byte("wtxmgr")
 
 	// lightningAddrSchema is the scope addr schema for all keys that we
 	// derive. We'll treat them all as p2wkh addresses, as atm we must
@@ -201,7 +203,7 @@ func LoaderWithExternalWalletDB(db kvdb.Backend) LoaderOption {
 
 // NewWalletLoader constructs a wallet loader.
 func NewWalletLoader(chainParams *chaincfg.Params, recoveryWindow uint32,
-	opts ...LoaderOption) (*wallet.Loader, error) {
+	opts ...LoaderOption) (*base.Loader, error) {
 
 	cfg := &loaderCfg{}
 
@@ -288,14 +290,37 @@ func (b *BtcWallet) InternalWallet() *base.Wallet {
 //
 // This is a part of the WalletController interface.
 func (b *BtcWallet) Start() error {
+	// Is the wallet (according to its database) currently watch-only
+	// already? If it is, we won't need to convert it later.
+	walletIsWatchOnly := b.wallet.Manager.WatchOnly()
+
+	// If the wallet is watch-only, but we don't expect it to be, then we
+	// are in an unexpected state and cannot continue.
+	if walletIsWatchOnly && !b.cfg.WatchOnly {
+		return fmt.Errorf("wallet is watch-only but we expect it " +
+			"not to be; check if remote signing was disabled by " +
+			"accident")
+	}
+
 	// We'll start by unlocking the wallet and ensuring that the KeyScope:
 	// (1017, 1) exists within the internal waddrmgr. We'll need this in
 	// order to properly generate the keys required for signing various
 	// contracts. If this is a watch-only wallet, we don't have any private
 	// keys and therefore unlocking is not necessary.
-	if !b.cfg.WatchOnly {
+	if !walletIsWatchOnly {
 		if err := b.wallet.Unlock(b.cfg.PrivatePass, nil); err != nil {
 			return err
+		}
+
+		// If the wallet isn't about to be converted, we need to inform
+		// the user that this wallet still contains all private key
+		// material and that they need to migrate the existing wallet.
+		if b.cfg.WatchOnly && !b.cfg.MigrateWatchOnly {
+			log.Warnf("Wallet is expected to be in watch-only " +
+				"mode but hasn't been migrated to watch-only " +
+				"yet, it still contains private keys; " +
+				"consider turning on the watch-only wallet " +
+				"migration in remote signing mode")
 		}
 	}
 
@@ -324,17 +349,13 @@ func (b *BtcWallet) Start() error {
 	err = walletdb.Update(b.db, func(tx walletdb.ReadWriteTx) error {
 		addrmgrNs := tx.ReadWriteBucket(waddrmgrNamespaceKey)
 
-		for _, keyFam := range keychain.VersionZeroKeyFamilies {
-			// If this is the multi-sig key family, then we can
-			// return early as this is the default account that's
-			// created.
-			if keyFam == keychain.KeyFamilyMultiSig {
-				continue
-			}
-
+		// Generate all accounts that we could ever need. This includes
+		// all lnd key families as well as some key families used in
+		// external liquidity tools.
+		for keyFam := uint32(1); keyFam <= 255; keyFam++ {
 			// Otherwise, we'll check if the account already exists,
 			// if so, we can once again bail early.
-			_, err := scope.AccountName(addrmgrNs, uint32(keyFam))
+			_, err := scope.AccountName(addrmgrNs, keyFam)
 			if err == nil {
 				continue
 			}
@@ -342,7 +363,24 @@ func (b *BtcWallet) Start() error {
 			// If we reach this point, then the account hasn't yet
 			// been created, so we'll need to create it before we
 			// can proceed.
-			err = scope.NewRawAccount(addrmgrNs, uint32(keyFam))
+			err = scope.NewRawAccount(addrmgrNs, keyFam)
+			if err != nil {
+				return err
+			}
+		}
+
+		// If this is the first startup with remote signing and wallet
+		// migration turned on and the wallet wasn't previously
+		// migrated, we can do that now that we made sure all accounts
+		// that we need were derived correctly.
+		if !walletIsWatchOnly && b.cfg.WatchOnly &&
+			b.cfg.MigrateWatchOnly {
+
+			log.Infof("Migrating wallet to watch-only mode, " +
+				"purging all private key material")
+
+			ns := tx.ReadWriteBucket(waddrmgrNamespaceKey)
+			err = b.wallet.Manager.ConvertToWatchingOnly(ns)
 			if err != nil {
 				return err
 			}
@@ -423,6 +461,8 @@ func (b *BtcWallet) keyScopeForAccountAddr(accountName string,
 		addrKeyScope = waddrmgr.KeyScopeBIP0084
 	case lnwallet.NestedWitnessPubKey:
 		addrKeyScope = waddrmgr.KeyScopeBIP0049Plus
+	case lnwallet.TaprootPubkey:
+		addrKeyScope = waddrmgr.KeyScopeBIP0086
 	default:
 		return waddrmgr.KeyScope{}, 0,
 			fmt.Errorf("unknown address type")
@@ -505,6 +545,16 @@ func (b *BtcWallet) IsOurAddress(a btcutil.Address) bool {
 	return result && (err == nil)
 }
 
+// AddressInfo returns the information about an address, if it's known to this
+// wallet.
+//
+// NOTE: This is a part of the WalletController interface.
+func (b *BtcWallet) AddressInfo(a btcutil.Address) (waddrmgr.ManagedAddress,
+	error) {
+
+	return b.wallet.AddressInfo(a)
+}
+
 // ListAccounts retrieves all accounts belonging to the wallet by default. A
 // name and key scope filter can be provided to filter through all of the wallet
 // accounts and return only those matching.
@@ -527,7 +577,7 @@ func (b *BtcWallet) ListAccounts(name string,
 	// Only the name filter was provided.
 	case name != "" && keyScope == nil:
 		// If the name corresponds to the default or imported accounts,
-		// we'll return them for both of our supported key scopes.
+		// we'll return them for all our supported key scopes.
 		if name == lnwallet.DefaultAccountName ||
 			name == waddrmgr.ImportedAddrAccountName {
 
@@ -546,6 +596,14 @@ func (b *BtcWallet) ListAccounts(name string,
 				return nil, err
 			}
 			res = append(res, a2)
+
+			a3, err := b.wallet.AccountPropertiesByName(
+				waddrmgr.KeyScopeBIP0086, name,
+			)
+			if err != nil {
+				return nil, err
+			}
+			res = append(res, a3)
 			break
 		}
 
@@ -586,6 +644,15 @@ func (b *BtcWallet) ListAccounts(name string,
 		}
 
 		accounts, err = b.wallet.Accounts(waddrmgr.KeyScopeBIP0084)
+		if err != nil {
+			return nil, err
+		}
+		for _, account := range accounts.Accounts {
+			account := account
+			res = append(res, &account.AccountProperties)
+		}
+
+		accounts, err = b.wallet.Accounts(waddrmgr.KeyScopeBIP0086)
 		if err != nil {
 			return nil, err
 		}
@@ -681,6 +748,26 @@ func (b *BtcWallet) ImportPublicKey(pubKey *btcec.PublicKey,
 	addrType waddrmgr.AddressType) error {
 
 	return b.wallet.ImportPublicKey(pubKey, addrType)
+}
+
+// ImportTaprootScript imports a user-provided taproot script into the address
+// manager. The imported script will act as a pay-to-taproot address.
+func (b *BtcWallet) ImportTaprootScript(scope waddrmgr.KeyScope,
+	tapscript *waddrmgr.Tapscript) (waddrmgr.ManagedAddress, error) {
+
+	// We want to be able to import script addresses into a watch-only
+	// wallet, which is only possible if we don't encrypt the script with
+	// the private key encryption key. By specifying the script as being
+	// "not secret", we can also decrypt the script in a watch-only wallet.
+	const isSecretScript = false
+
+	// Currently, only v1 (Taproot) scripts are supported. We don't even
+	// know what a v2 witness version would look like at this point.
+	const witnessVersionTaproot byte = 1
+
+	return b.wallet.ImportTaprootScript(
+		scope, tapscript, nil, witnessVersionTaproot, isSecretScript,
+	)
 }
 
 // SendOutputs funds, signs, and broadcasts a Bitcoin transaction paying out to
@@ -864,10 +951,13 @@ func (b *BtcWallet) ListUnspentWitness(minConfs, maxConfs int32,
 			// wallet are nested p2pkh. We can't check the redeem script because
 			// the btcwallet service does not include it.
 			addressType = lnwallet.NestedWitnessPubKey
+		} else if txscript.IsPayToTaproot(pkScript) {
+			addressType = lnwallet.TaprootPubkey
 		}
 
 		if addressType == lnwallet.WitnessPubKey ||
-			addressType == lnwallet.NestedWitnessPubKey {
+			addressType == lnwallet.NestedWitnessPubKey ||
+			addressType == lnwallet.TaprootPubkey {
 
 			txid, err := chainhash.NewHashFromStr(output.TxID)
 			if err != nil {
@@ -906,11 +996,9 @@ func (b *BtcWallet) ListUnspentWitness(minConfs, maxConfs int32,
 // network (either in the mempool or chain) no error will be returned.
 func (b *BtcWallet) PublishTransaction(tx *wire.MsgTx, label string) error {
 	if err := b.wallet.PublishTransaction(tx, label); err != nil {
-
 		// If we failed to publish the transaction, check whether we
 		// got an error of known type.
 		switch err.(type) {
-
 		// If the wallet reports a double spend, convert it to our
 		// internal ErrDoubleSpend and return.
 		case *base.ErrDoubleSpend:
@@ -977,18 +1065,35 @@ func minedTransactionsToDetails(
 			return nil, err
 		}
 
-		var destAddresses []btcutil.Address
-		for _, txOut := range wireTx.TxOut {
-			_, outAddresses, _, err := txscript.ExtractPkScriptAddrs(
+		// isOurAddress is a map containing the output indices
+		// controlled by the wallet.
+		// Note: We make use of the information in `MyOutputs` provided
+		// by the `wallet.TransactionSummary` structure that holds
+		// information only if the output is controlled by the wallet.
+		isOurAddress := make(map[int]bool, len(tx.MyOutputs))
+		for _, o := range tx.MyOutputs {
+			isOurAddress[int(o.Index)] = true
+		}
+
+		var outputDetails []lnwallet.OutputDetail
+		for i, txOut := range wireTx.TxOut {
+			var addresses []btcutil.Address
+			sc, outAddresses, _, err := txscript.ExtractPkScriptAddrs(
 				txOut.PkScript, chainParams,
 			)
-			if err != nil {
-				// Skip any unsupported addresses to prevent
-				// other transactions from not being returned.
-				continue
+			if err == nil {
+				// Add supported addresses.
+				addresses = outAddresses
 			}
 
-			destAddresses = append(destAddresses, outAddresses...)
+			outputDetails = append(outputDetails, lnwallet.OutputDetail{
+				OutputType:   sc,
+				Addresses:    addresses,
+				PkScript:     txOut.PkScript,
+				OutputIndex:  i,
+				Value:        btcutil.Amount(txOut.Value),
+				IsOurAddress: isOurAddress[i],
+			})
 		}
 
 		txDetail := &lnwallet.TransactionDetail{
@@ -998,7 +1103,7 @@ func minedTransactionsToDetails(
 			BlockHeight:      block.Height,
 			Timestamp:        block.Timestamp,
 			TotalFees:        int64(tx.Fee),
-			DestAddresses:    destAddresses,
+			OutputDetails:    outputDetails,
 			RawTx:            tx.Transaction,
 			Label:            tx.Label,
 		}
@@ -1029,24 +1134,42 @@ func unminedTransactionsToDetail(
 		return nil, err
 	}
 
-	var destAddresses []btcutil.Address
-	for _, txOut := range wireTx.TxOut {
-		_, outAddresses, _, err :=
-			txscript.ExtractPkScriptAddrs(txOut.PkScript, chainParams)
-		if err != nil {
-			// Skip any unsupported addresses to prevent other
-			// transactions from not being returned.
-			continue
+	// isOurAddress is a map containing the output indices controlled by
+	// the wallet.
+	// Note: We make use of the information in `MyOutputs` provided
+	// by the `wallet.TransactionSummary` structure that holds information
+	// only if the output is controlled by the wallet.
+	isOurAddress := make(map[int]bool, len(summary.MyOutputs))
+	for _, o := range summary.MyOutputs {
+		isOurAddress[int(o.Index)] = true
+	}
+
+	var outputDetails []lnwallet.OutputDetail
+	for i, txOut := range wireTx.TxOut {
+		var addresses []btcutil.Address
+		sc, outAddresses, _, err := txscript.ExtractPkScriptAddrs(
+			txOut.PkScript, chainParams,
+		)
+		if err == nil {
+			// Add supported addresses.
+			addresses = outAddresses
 		}
 
-		destAddresses = append(destAddresses, outAddresses...)
+		outputDetails = append(outputDetails, lnwallet.OutputDetail{
+			OutputType:   sc,
+			Addresses:    addresses,
+			PkScript:     txOut.PkScript,
+			OutputIndex:  i,
+			Value:        btcutil.Amount(txOut.Value),
+			IsOurAddress: isOurAddress[i],
+		})
 	}
 
 	txDetail := &lnwallet.TransactionDetail{
 		Hash:          *summary.Hash,
 		TotalFees:     int64(summary.Fee),
 		Timestamp:     summary.Timestamp,
-		DestAddresses: destAddresses,
+		OutputDetails: outputDetails,
 		RawTx:         summary.Transaction,
 		Label:         summary.Label,
 	}
@@ -1112,104 +1235,6 @@ func (b *BtcWallet) ListTransactionDetails(startHeight, endHeight int32,
 	}
 
 	return txDetails, nil
-}
-
-// FundPsbt creates a fully populated PSBT packet that contains enough inputs to
-// fund the outputs specified in the passed in packet with the specified fee
-// rate. If there is change left, a change output from the internal wallet is
-// added and the index of the change output is returned. Otherwise no additional
-// output is created and the index -1 is returned.
-//
-// NOTE: If the packet doesn't contain any inputs, coin selection is performed
-// automatically. The account parameter must be non-empty as it determines which
-// set of coins are eligible for coin selection. If the packet does contain any
-// inputs, it is assumed that full coin selection happened externally and no
-// additional inputs are added. If the specified inputs aren't enough to fund
-// the outputs with the given fee rate, an error is returned. No lock lease is
-// acquired for any of the selected/validated inputs. It is in the caller's
-// responsibility to lock the inputs before handing them out.
-//
-// This is a part of the WalletController interface.
-func (b *BtcWallet) FundPsbt(packet *psbt.Packet, minConfs int32,
-	feeRate chainfee.SatPerKWeight, accountName string) (int32, error) {
-
-	// The fee rate is passed in using units of sat/kw, so we'll convert
-	// this to sat/KB as the CreateSimpleTx method requires this unit.
-	feeSatPerKB := btcutil.Amount(feeRate.FeePerKVByte())
-
-	var (
-		keyScope   *waddrmgr.KeyScope
-		accountNum uint32
-	)
-	switch accountName {
-	// If the default/imported account name was specified, we'll provide a
-	// nil key scope to FundPsbt, allowing it to select inputs from both key
-	// scopes (NP2WKH, P2WKH).
-	case lnwallet.DefaultAccountName:
-		accountNum = defaultAccount
-
-	case waddrmgr.ImportedAddrAccountName:
-		accountNum = importedAccount
-
-	// Otherwise, map the account name to its key scope and internal account
-	// number to only select inputs from said account.
-	default:
-		scope, account, err := b.wallet.LookupAccount(accountName)
-		if err != nil {
-			return 0, err
-		}
-		keyScope = &scope
-		accountNum = account
-	}
-
-	// Let the wallet handle coin selection and/or fee estimation based on
-	// the partial TX information in the packet.
-	return b.wallet.FundPsbt(
-		packet, keyScope, minConfs, accountNum, feeSatPerKB,
-		b.cfg.CoinSelectionStrategy,
-	)
-}
-
-// FinalizePsbt expects a partial transaction with all inputs and outputs fully
-// declared and tries to sign all inputs that belong to the specified account.
-// Lnd must be the last signer of the transaction. That means, if there are any
-// unsigned non-witness inputs or inputs without UTXO information attached or
-// inputs without witness data that do not belong to lnd's wallet, this method
-// will fail. If no error is returned, the PSBT is ready to be extracted and the
-// final TX within to be broadcast.
-//
-// NOTE: This method does NOT publish the transaction after it's been
-// finalized successfully.
-//
-// This is a part of the WalletController interface.
-func (b *BtcWallet) FinalizePsbt(packet *psbt.Packet, accountName string) error {
-	var (
-		keyScope   *waddrmgr.KeyScope
-		accountNum uint32
-	)
-	switch accountName {
-	// If the default/imported account name was specified, we'll provide a
-	// nil key scope to FundPsbt, allowing it to sign inputs from both key
-	// scopes (NP2WKH, P2WKH).
-	case lnwallet.DefaultAccountName:
-		accountNum = defaultAccount
-
-	case waddrmgr.ImportedAddrAccountName:
-		accountNum = importedAccount
-
-	// Otherwise, map the account name to its key scope and internal account
-	// number to determine if the inputs belonging to this account should be
-	// signed.
-	default:
-		scope, account, err := b.wallet.LookupAccount(accountName)
-		if err != nil {
-			return err
-		}
-		keyScope = &scope
-		accountNum = account
-	}
-
-	return b.wallet.FinalizePsbt(keyScope, accountNum, packet)
 }
 
 // txSubscriptionClient encapsulates the transaction notification client from
@@ -1448,6 +1473,7 @@ func (b *BtcWallet) GetRecoveryInfo() (bool, float64, error) {
 	// rollback happens. In that case, we will return zero progress here.
 	if syncState.Height < birthdayBlock.Height ||
 		bestHeight < birthdayBlock.Height {
+
 		return isRecoveryMode, progress, nil
 	}
 
@@ -1464,4 +1490,47 @@ func (b *BtcWallet) GetRecoveryInfo() (bool, float64, error) {
 		float64(bestHeight-birthdayBlock.Height+1)
 
 	return isRecoveryMode, progress, nil
+}
+
+// FetchTx attempts to fetch a transaction in the wallet's database identified
+// by the passed transaction hash. If the transaction can't be found, then a
+// nil pointer is returned.
+func (b *BtcWallet) FetchTx(txHash chainhash.Hash) (*wire.MsgTx, error) {
+	var targetTx *wtxmgr.TxDetails
+	err := walletdb.View(b.db, func(tx walletdb.ReadTx) error {
+		wtxmgrNs := tx.ReadBucket(wtxmgrNamespaceKey)
+		txDetails, err := b.wallet.TxStore.TxDetails(wtxmgrNs, &txHash)
+		if err != nil {
+			return err
+		}
+
+		targetTx = txDetails
+
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	if targetTx == nil {
+		return nil, nil
+	}
+
+	return &targetTx.TxRecord.MsgTx, nil
+}
+
+// RemoveDescendants attempts to remove any transaction from the wallet's tx
+// store (that may be unconfirmed) that spends outputs created by the passed
+// transaction. This remove propagates recursively down the chain of descendent
+// transactions.
+func (b *BtcWallet) RemoveDescendants(tx *wire.MsgTx) error {
+	txRecord, err := wtxmgr.NewTxRecordFromMsgTx(tx, time.Now())
+	if err != nil {
+		return err
+	}
+
+	return walletdb.Update(b.db, func(tx walletdb.ReadWriteTx) error {
+		wtxmgrNs := tx.ReadWriteBucket(wtxmgrNamespaceKey)
+		return b.wallet.TxStore.RemoveUnminedTx(wtxmgrNs, txRecord)
+	})
 }

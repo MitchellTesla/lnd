@@ -10,8 +10,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/lnrpc"
@@ -20,7 +20,6 @@ import (
 	"github.com/lightningnetwork/lnd/macaroons"
 	"github.com/lightningnetwork/lnd/routing"
 	"github.com/lightningnetwork/lnd/routing/route"
-
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -553,7 +552,9 @@ func (s *Server) XImportMissionControl(ctx context.Context,
 		snapshot.Pairs[i] = *pairSnapshot
 	}
 
-	err := s.cfg.RouterBackend.MissionControl.ImportHistory(snapshot)
+	err := s.cfg.RouterBackend.MissionControl.ImportHistory(
+		snapshot, req.Force,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -664,7 +665,7 @@ func getMsatPairValue(msatValue lnwire.MilliSatoshi,
 		return msatValue, nil
 	}
 
-	// If we have no msatValue, we can just return our sate value even if
+	// If we have no msatValue, we can just return our state value even if
 	// it is zero, because it's impossible that we have mismatched values.
 	if msatValue == 0 {
 		return lnwire.MilliSatoshi(satValue * 1000), nil
@@ -877,7 +878,7 @@ func (s *Server) SubscribeHtlcEvents(req *SubscribeHtlcEventsRequest,
 // requests to the caller.
 // Upon connection it does the following:
 // 1. Check if there is already a live stream, if yes it rejects the request.
-// 2. Regsitered a ForwardInterceptor
+// 2. Registered a ForwardInterceptor
 // 3. Delivers to the caller every √√ and detect his answer.
 // It uses a local implementation of holdForwardsStore to keep all the hold
 // forwards and find them when manual resolution is later needed.
@@ -889,7 +890,9 @@ func (s *Server) HtlcInterceptor(stream Router_HtlcInterceptorServer) error {
 	defer atomic.CompareAndSwapInt32(&s.forwardInterceptorActive, 1, 0)
 
 	// run the forward interceptor.
-	return newForwardInterceptor(s, stream).run()
+	return newForwardInterceptor(
+		s.cfg.RouterBackend.InterceptableForwarder, stream,
+	).run()
 }
 
 func extractOutPoint(req *UpdateChanStatusRequest) (*wire.OutPoint, error) {

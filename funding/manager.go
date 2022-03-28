@@ -8,11 +8,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/btcsuite/btcd/btcec"
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/ecdsa"
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
 	"github.com/davecgh/go-spew/spew"
 	"github.com/go-errors/errors"
 	"github.com/lightningnetwork/lnd/chainntnfs"
@@ -84,7 +85,7 @@ const (
 
 	// MaxBtcFundingAmountWumbo is a soft-limit on the maximum size of wumbo
 	// channels. This limit is 10 BTC and is the only thing standing between
-	// you and limitless channel size (apart from 21 million cap)
+	// you and limitless channel size (apart from 21 million cap).
 	MaxBtcFundingAmountWumbo = btcutil.Amount(1000000000)
 
 	// MaxLtcFundingAmount is a soft-limit of the maximum channel size
@@ -92,7 +93,7 @@ const (
 	// Protocol.
 	MaxLtcFundingAmount = MaxBtcFundingAmount * chainreg.BtcToLtcConversionRate
 
-	// TODO(roasbeef): tune
+	// TODO(roasbeef): tune.
 	msgBufferSize = 50
 
 	// maxWaitNumBlocksFundingConf is the maximum number of blocks to wait
@@ -327,7 +328,7 @@ type Config struct {
 	// TODO(roasbeef): should instead pass on this responsibility to a
 	// distinct sub-system?
 	SignMessage func(keyLoc keychain.KeyLocator,
-		msg []byte, doubleHash bool) (*btcec.Signature, error)
+		msg []byte, doubleHash bool) (*ecdsa.Signature, error)
 
 	// CurrentNodeAnnouncement should return the latest, fully signed node
 	// announcement from the backing Lightning Network node.
@@ -553,6 +554,19 @@ const (
 	addedToRouterGraph
 )
 
+func (c channelOpeningState) String() string {
+	switch c {
+	case markedOpen:
+		return "markedOpen"
+	case fundingLockedSent:
+		return "fundingLocked"
+	case addedToRouterGraph:
+		return "addedToRouterGraph"
+	default:
+		return "unknown"
+	}
+}
+
 // NewFundingManager creates and initializes a new instance of the
 // fundingManager.
 func NewFundingManager(cfg Config) (*Manager, error) {
@@ -575,14 +589,13 @@ func NewFundingManager(cfg Config) (*Manager, error) {
 func (f *Manager) Start() error {
 	var err error
 	f.started.Do(func() {
+		log.Info("Funding manager starting")
 		err = f.start()
 	})
 	return err
 }
 
 func (f *Manager) start() error {
-	log.Tracef("Funding manager running")
-
 	// Upon restart, the Funding Manager will check the database to load any
 	// channels that were  waiting for their funding transactions to be
 	// confirmed on the blockchain at the time when the daemon last went
@@ -710,7 +723,6 @@ func (f *Manager) nextPendingChanID() [32]byte {
 // passed node. This will ensure any outputs which have been pre committed,
 // (and thus locked from coin selection), are properly freed.
 func (f *Manager) CancelPeerReservations(nodePub [33]byte) {
-
 	log.Debugf("Cancelling all reservations for peer %x", nodePub[:])
 
 	f.resMtx.Lock()
@@ -926,7 +938,6 @@ func (f *Manager) stateStep(channel *channeldb.OpenChannel,
 		chanID, shortChanID, channelState)
 
 	switch channelState {
-
 	// The funding transaction was confirmed, but we did not successfully
 	// send the fundingLocked message to the peer, so let's do that now.
 	case markedOpen:
@@ -1099,7 +1110,6 @@ func (f *Manager) advancePendingChannelState(
 		}()
 
 		return timeoutErr
-
 	} else if err != nil {
 		return fmt.Errorf("error waiting for funding "+
 			"confirmation for ChannelPoint(%v): %v",
@@ -1136,7 +1146,7 @@ func (f *Manager) ProcessFundingMsg(msg lnwire.Message, peer lnpeer.Peer) {
 // the funding workflow.
 //
 // TODO(roasbeef): add error chan to all, let channelManager handle
-// error+propagate
+// error+propagate.
 func (f *Manager) handleFundingOpen(peer lnpeer.Peer,
 	msg *lnwire.OpenChannel) {
 
@@ -1225,7 +1235,7 @@ func (f *Manager) handleFundingOpen(peer lnpeer.Peer,
 	if amt < f.cfg.MinChanSize {
 		f.failFundingFlow(
 			peer, msg.PendingChannelID,
-			lnwallet.ErrChanTooSmall(amt, btcutil.Amount(f.cfg.MinChanSize)),
+			lnwallet.ErrChanTooSmall(amt, f.cfg.MinChanSize),
 		)
 		return
 	}
@@ -1274,14 +1284,22 @@ func (f *Manager) handleFundingOpen(peer lnpeer.Peer,
 	// the remote peer are signaling the proper feature bit if we're using
 	// implicit negotiation, and simply the channel type sent over if we're
 	// using explicit negotiation.
-	commitType, err := negotiateCommitmentType(
+	wasExplicit, _, commitType, err := negotiateCommitmentType(
 		msg.ChannelType, peer.LocalFeatures(), peer.RemoteFeatures(),
+		false,
 	)
 	if err != nil {
 		// TODO(roasbeef): should be using soft errors
 		log.Errorf("channel type negotiation failed: %v", err)
 		f.failFundingFlow(peer, msg.PendingChannelID, err)
 		return
+	}
+
+	// Only echo back a channel type in AcceptChannel if we actually used
+	// explicit negotiation above.
+	var chanTypeFeatureBits *lnwire.ChannelType
+	if wasExplicit {
+		chanTypeFeatureBits = msg.ChannelType
 	}
 
 	chainHash := chainhash.Hash(msg.ChainHash)
@@ -1520,7 +1538,7 @@ func (f *Manager) handleFundingOpen(peer lnpeer.Peer,
 		HtlcPoint:             ourContribution.HtlcBasePoint.PubKey,
 		FirstCommitmentPoint:  ourContribution.FirstCommitmentPoint,
 		UpfrontShutdownScript: ourContribution.UpfrontShutdown,
-		ChannelType:           msg.ChannelType,
+		ChannelType:           chanTypeFeatureBits,
 		LeaseExpiry:           msg.LeaseExpiry,
 	}
 
@@ -1587,9 +1605,36 @@ func (f *Manager) handleFundingAccept(peer lnpeer.Peer,
 			}
 		}
 	} else if msg.ChannelType != nil {
-		err := errors.New("received unexpected channel type")
-		f.failFundingFlow(peer, msg.PendingChannelID, err)
-		return
+		// The spec isn't too clear about whether it's okay to set the
+		// channel type in the accept_channel response if we didn't
+		// explicitly set it in the open_channel message. For now, let's
+		// just log the problem instead of failing the funding flow.
+		_, implicitChannelType := implicitNegotiateCommitmentType(
+			peer.LocalFeatures(), peer.RemoteFeatures(),
+		)
+
+		// We pass in false here as the funder since at this point, we
+		// didn't set a chan type ourselves, so falling back to
+		// implicit funding is acceptable.
+		_, _, negotiatedChannelType, err := negotiateCommitmentType(
+			msg.ChannelType, peer.LocalFeatures(),
+			peer.RemoteFeatures(), false,
+		)
+		if err != nil {
+			err := errors.New("received unexpected channel type")
+			f.failFundingFlow(peer, msg.PendingChannelID, err)
+			return
+		}
+
+		// Even though we don't expect a channel type to be set when we
+		// didn't send one in the first place, we check that it's the
+		// same type we'd have arrived through implicit negotiation. If
+		// it's another type, we fail the flow.
+		if implicitChannelType != negotiatedChannelType {
+			err := errors.New("negotiated unexpected channel type")
+			f.failFundingFlow(peer, msg.PendingChannelID, err)
+			return
+		}
 	}
 
 	// The required number of confirmations should not be greater than the
@@ -2334,6 +2379,7 @@ func (f *Manager) waitForFundingConfirmation(
 // NOTE: This MUST be run as a goroutine.
 func (f *Manager) waitForTimeout(completeChan *channeldb.OpenChannel,
 	cancelChan <-chan struct{}, timeoutChan chan<- error) {
+
 	defer f.wg.Done()
 
 	epochClient, err := f.cfg.Notifier.RegisterBlockEpochNtfn(nil)
@@ -2357,7 +2403,7 @@ func (f *Manager) waitForTimeout(completeChan *channeldb.OpenChannel,
 			}
 
 			// Close the timeout channel and exit if the block is
-			// aboce the max height.
+			// above the max height.
 			if uint32(epoch.Height) >= maxHeight {
 				log.Warnf("Waited for %v blocks without "+
 					"seeing funding transaction confirmed,"+
@@ -2738,7 +2784,7 @@ func (f *Manager) annAfterSixConfs(completeChan *channeldb.OpenChannel,
 		}
 
 		log.Debugf("Channel with ChannelPoint(%v), short_chan_id=%v "+
-			"announced", &fundingPoint, shortChanID)
+			"sent to gossiper", &fundingPoint, shortChanID)
 	}
 
 	return nil
@@ -3223,9 +3269,9 @@ func (f *Manager) handleInitFundingMsg(msg *InitFundingMsg) {
 	// Before we init the channel, we'll also check to see what commitment
 	// format we can use with this peer. This is dependent on *both* us and
 	// the remote peer are signaling the proper feature bit.
-	commitType, err := negotiateCommitmentType(
+	_, chanType, commitType, err := negotiateCommitmentType(
 		msg.ChannelType, msg.Peer.LocalFeatures(),
-		msg.Peer.RemoteFeatures(),
+		msg.Peer.RemoteFeatures(), true,
 	)
 	if err != nil {
 		log.Errorf("channel type negotiation failed: %v", err)
@@ -3247,6 +3293,7 @@ func (f *Manager) handleInitFundingMsg(msg *InitFundingMsg) {
 	// maximum.
 	if commitType.HasAnchors() &&
 		commitFeePerKw > f.cfg.MaxAnchorsCommitFeeRate {
+
 		commitFeePerKw = f.cfg.MaxAnchorsCommitFeeRate
 	}
 
@@ -3380,7 +3427,7 @@ func (f *Manager) handleInitFundingMsg(msg *InitFundingMsg) {
 		FirstCommitmentPoint:  ourContribution.FirstCommitmentPoint,
 		ChannelFlags:          channelFlags,
 		UpfrontShutdownScript: shutdown,
-		ChannelType:           msg.ChannelType,
+		ChannelType:           chanType,
 		LeaseExpiry:           leaseExpiry,
 	}
 	if err := msg.Peer.SendMessage(true, &fundingOpen); err != nil {
@@ -3466,7 +3513,8 @@ func (f *Manager) pruneZombieReservations() {
 
 	for pendingChanID, resCtx := range zombieReservations {
 		err := fmt.Errorf("reservation timed out waiting for peer "+
-			"(peer_id:%x, chan_id:%x)", resCtx.peer.IdentityKey(),
+			"(peer_id:%x, chan_id:%x)",
+			resCtx.peer.IdentityKey().SerializeCompressed(),
 			pendingChanID[:])
 		log.Warnf(err.Error())
 		f.failFundingFlow(resCtx.peer, pendingChanID, err)
@@ -3581,11 +3629,10 @@ func (f *Manager) IsPendingChannel(pendingChanID [32]byte,
 }
 
 func copyPubKey(pub *btcec.PublicKey) *btcec.PublicKey {
-	return &btcec.PublicKey{
-		Curve: btcec.S256(),
-		X:     pub.X,
-		Y:     pub.Y,
-	}
+	var tmp btcec.JacobianPoint
+	pub.AsJacobian(&tmp)
+	tmp.ToAffine()
+	return btcec.NewPublicKey(&tmp.X, &tmp.Y)
 }
 
 // saveChannelOpeningState saves the channelOpeningState for the provided

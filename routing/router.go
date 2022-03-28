@@ -10,12 +10,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/btcsuite/btcd/btcec"
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
 	"github.com/davecgh/go-spew/spew"
 	"github.com/go-errors/errors"
-
 	sphinx "github.com/lightningnetwork/lightning-onion"
 	"github.com/lightningnetwork/lnd/amp"
 	"github.com/lightningnetwork/lnd/batch"
@@ -157,11 +156,6 @@ type ChannelGraphSource interface {
 
 	// ForEachNode is used to iterate over every node in the known graph.
 	ForEachNode(func(node *channeldb.LightningNode) error) error
-
-	// ForEachChannel is used to iterate over every channel in the known
-	// graph.
-	ForEachChannel(func(chanInfo *channeldb.ChannelEdgeInfo,
-		e1, e2 *channeldb.ChannelEdgePolicy) error) error
 }
 
 // PaymentAttemptDispatcher is used by the router to send payment attempts onto
@@ -200,7 +194,7 @@ type PaymentAttemptDispatcher interface {
 }
 
 // PaymentSessionSource is an interface that defines a source for the router to
-// retrive new payment sessions.
+// retrieve new payment sessions.
 type PaymentSessionSource interface {
 	// NewPaymentSession creates a new payment session that will produce
 	// routes to the given target. An optional set of routing hints can be
@@ -496,7 +490,7 @@ func (r *ChannelRouter) Start() error {
 		return nil
 	}
 
-	log.Tracef("Channel Router starting")
+	log.Info("Channel Router starting")
 
 	bestHash, bestHeight, err := r.cfg.Chain.GetBestBlock()
 	if err != nil {
@@ -1062,13 +1056,19 @@ func (r *ChannelRouter) networkHandler() {
 					update.msg,
 				)
 				if err != nil {
-					switch err {
-					case ErrVBarrierShuttingDown:
+					switch {
+					case IsError(
+						err, ErrVBarrierShuttingDown,
+					):
 						update.err <- err
-					case ErrParentValidationFailed:
+
+					case IsError(
+						err, ErrParentValidationFailed,
+					):
 						update.err <- newErrf(
 							ErrIgnored, err.Error(),
 						)
+
 					default:
 						log.Warnf("unexpected error "+
 							"during validation "+
@@ -1803,7 +1803,7 @@ func generateNewSessionKey() (*btcec.PrivateKey, error) {
 	// any replay.
 	//
 	// TODO(roasbeef): add more sources of randomness?
-	return btcec.NewPrivateKey(btcec.S256())
+	return btcec.NewPrivateKey()
 }
 
 // generateSphinxPacket generates then encodes a sphinx packet which encodes
@@ -1827,7 +1827,6 @@ func generateSphinxPacket(rt *route.Route, paymentHash []byte,
 			path := make([]sphinx.OnionHop, sphinxPath.TrueRouteLength())
 			for i := range path {
 				hopCopy := sphinxPath[i]
-				hopCopy.NodePub.Curve = nil
 				path[i] = hopCopy
 			}
 			return spew.Sdump(path)
@@ -1857,7 +1856,6 @@ func generateSphinxPacket(rt *route.Route, paymentHash []byte,
 			// internal curve here in order to keep the logs from
 			// getting noisy.
 			key := *sphinxPacket.EphemeralKey
-			key.Curve = nil
 			packetCopy := *sphinxPacket
 			packetCopy.EphemeralKey = &key
 			return spew.Sdump(packetCopy)
@@ -2071,7 +2069,6 @@ func spewPayment(payment *LightningPayment) logClosure {
 			var hopHints []zpay32.HopHint
 			for _, hopHint := range routeHint {
 				h := hopHint.Copy()
-				h.NodeID.Curve = nil
 				hopHints = append(hopHints, h)
 			}
 			routeHints = append(routeHints, hopHints)
@@ -2110,7 +2107,6 @@ func (r *ChannelRouter) preparePayment(payment *LightningPayment) (
 	// this payment.
 	var shardTracker shards.ShardTracker
 	switch {
-
 	// If this is an AMP payment, we'll use the AMP shard tracker.
 	case payment.amp != nil:
 		shardTracker = amp.NewShardTracker(
@@ -2535,16 +2531,6 @@ func (r *ChannelRouter) ForAllOutgoingChannels(cb func(kvdb.RTx,
 	})
 }
 
-// ForEachChannel is used to iterate over every known edge (channel) within our
-// view of the channel graph.
-//
-// NOTE: This method is part of the ChannelGraphSource interface.
-func (r *ChannelRouter) ForEachChannel(cb func(chanInfo *channeldb.ChannelEdgeInfo,
-	e1, e2 *channeldb.ChannelEdgePolicy) error) error {
-
-	return r.cfg.Graph.ForEachChannel(cb)
-}
-
 // AddProof updates the channel edge info with proof which is needed to
 // properly announce the edge to the rest of the network.
 //
@@ -2588,7 +2574,7 @@ func (r *ChannelRouter) IsKnownEdge(chanID lnwire.ShortChannelID) bool {
 	return exists || isZombie
 }
 
-// IsStaleEdgePolicy returns true if the graph soruce has a channel edge for
+// IsStaleEdgePolicy returns true if the graph source has a channel edge for
 // the passed channel ID (and flags) that have a more recent timestamp.
 //
 // NOTE: This method is part of the ChannelGraphSource interface.

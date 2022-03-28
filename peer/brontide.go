@@ -10,13 +10,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/btcsuite/btcd/btcec"
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/connmgr"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/davecgh/go-spew/spew"
-
 	"github.com/lightningnetwork/lnd/buffer"
 	"github.com/lightningnetwork/lnd/chainntnfs"
 	"github.com/lightningnetwork/lnd/channeldb"
@@ -319,6 +318,13 @@ type Config struct {
 	// operations at the cost of latency.
 	ChannelCommitInterval time.Duration
 
+	// PendingCommitInterval is the maximum time that is allowed to pass
+	// while waiting for the remote party to revoke a locally initiated
+	// commitment state. Setting this to a longer duration if a slow
+	// response is expected from the remote party or large number of
+	// payments are attempted at the same time.
+	PendingCommitInterval time.Duration
+
 	// ChannelCommitBatchSize is the maximum number of channel state updates
 	// that is accumulated before signing a new commitment.
 	ChannelCommitBatchSize uint32
@@ -326,6 +332,12 @@ type Config struct {
 	// HandleCustomMessage is called whenever a custom message is received
 	// from the peer.
 	HandleCustomMessage func(peer [33]byte, msg *lnwire.Custom) error
+
+	// PongBuf is a slice we'll reuse instead of allocating memory on the
+	// heap. Since only reads will occur and no writes, there is no need
+	// for any synchronization primitives. As a result, it's safe to share
+	// this across multiple Peer struct instances.
+	PongBuf []byte
 
 	// Quit is the server's quit channel. If this is closed, we halt operation.
 	Quit chan struct{}
@@ -479,7 +491,8 @@ func (p *Brontide) Start() error {
 		return nil
 	}
 
-	peerLog.Tracef("Peer %v starting", p)
+	peerLog.Tracef("Peer %v starting with conn[%v->%v]", p,
+		p.cfg.Conn.LocalAddr(), p.cfg.Conn.RemoteAddr())
 
 	// Fetch and then load all the active channels we have with this remote
 	// peer from the database.
@@ -611,7 +624,6 @@ func (p *Brontide) Start() error {
 // initGossipSync initializes either a gossip syncer or an initial routing
 // dump, depending on the negotiated synchronization method.
 func (p *Brontide) initGossipSync() {
-
 	// If the remote peer knows of the new gossip queries feature, then
 	// we'll create a new gossipSyncer in the AuthenticatedGossiper for it.
 	if p.remoteFeatures.HasFeature(lnwire.GossipQueriesOptional) {
@@ -810,6 +822,10 @@ func (p *Brontide) addLink(chanPoint *wire.OutPoint,
 		return p.cfg.ChainArb.UpdateContractSignals(*chanPoint, signals)
 	}
 
+	notifyContractUpdate := func(update *contractcourt.ContractUpdate) error {
+		return p.cfg.ChainArb.NotifyContractUpdate(*chanPoint, update)
+	}
+
 	chanType := lnChan.State().ChanType
 
 	// Select the appropriate tower client based on the channel type. It's
@@ -823,25 +839,28 @@ func (p *Brontide) addLink(chanPoint *wire.OutPoint,
 	}
 
 	linkCfg := htlcswitch.ChannelLinkConfig{
-		Peer:                    p,
-		DecodeHopIterators:      p.cfg.Sphinx.DecodeHopIterators,
-		ExtractErrorEncrypter:   p.cfg.Sphinx.ExtractErrorEncrypter,
-		FetchLastChannelUpdate:  p.cfg.FetchLastChanUpdate,
-		HodlMask:                p.cfg.Hodl.Mask(),
-		Registry:                p.cfg.Invoices,
-		BestHeight:              p.cfg.Switch.BestHeight,
-		Circuits:                p.cfg.Switch.CircuitModifier(),
-		ForwardPackets:          p.cfg.InterceptSwitch.ForwardPackets,
-		FwrdingPolicy:           *forwardingPolicy,
-		FeeEstimator:            p.cfg.FeeEstimator,
-		PreimageCache:           p.cfg.WitnessBeacon,
-		ChainEvents:             chainEvents,
-		UpdateContractSignals:   updateContractSignals,
-		OnChannelFailure:        onChannelFailure,
-		SyncStates:              syncStates,
-		BatchTicker:             ticker.New(p.cfg.ChannelCommitInterval),
-		FwdPkgGCTicker:          ticker.New(time.Hour),
-		PendingCommitTicker:     ticker.New(time.Minute),
+		Peer:                   p,
+		DecodeHopIterators:     p.cfg.Sphinx.DecodeHopIterators,
+		ExtractErrorEncrypter:  p.cfg.Sphinx.ExtractErrorEncrypter,
+		FetchLastChannelUpdate: p.cfg.FetchLastChanUpdate,
+		HodlMask:               p.cfg.Hodl.Mask(),
+		Registry:               p.cfg.Invoices,
+		BestHeight:             p.cfg.Switch.BestHeight,
+		Circuits:               p.cfg.Switch.CircuitModifier(),
+		ForwardPackets:         p.cfg.InterceptSwitch.ForwardPackets,
+		FwrdingPolicy:          *forwardingPolicy,
+		FeeEstimator:           p.cfg.FeeEstimator,
+		PreimageCache:          p.cfg.WitnessBeacon,
+		ChainEvents:            chainEvents,
+		UpdateContractSignals:  updateContractSignals,
+		NotifyContractUpdate:   notifyContractUpdate,
+		OnChannelFailure:       onChannelFailure,
+		SyncStates:             syncStates,
+		BatchTicker:            ticker.New(p.cfg.ChannelCommitInterval),
+		FwdPkgGCTicker:         ticker.New(time.Hour),
+		PendingCommitTicker: ticker.New(
+			p.cfg.PendingCommitInterval,
+		),
 		BatchSize:               p.cfg.ChannelCommitBatchSize,
 		UnsafeReplay:            p.cfg.UnsafeReplay,
 		MinFeeUpdateTimeout:     htlcswitch.DefaultMinLinkFeeUpdateTimeout,
@@ -1144,7 +1163,7 @@ func (ms *msgStream) msgConsumer() {
 // concurrent access.
 func (ms *msgStream) AddMsg(msg lnwire.Message) {
 	// First, we'll attempt to receive from the producerSema struct. This
-	// acts as a sempahore to prevent us from indefinitely buffering
+	// acts as a semaphore to prevent us from indefinitely buffering
 	// incoming items from the wire. Either the msg queue isn't full, and
 	// we'll not block, or the queue is full, and we'll block until either
 	// we're signalled to quit, or a slot is freed up.
@@ -1238,7 +1257,6 @@ func waitUntilLinkActive(p *Brontide,
 // channel this stream forwards to is held in scope to prevent unnecessary
 // lookups.
 func newChanMsgStream(p *Brontide, cid lnwire.ChannelID) *msgStream {
-
 	var chanLink htlcswitch.ChannelUpdateHandler
 
 	apply := func(msg lnwire.Message) {
@@ -1393,10 +1411,8 @@ out:
 
 			// Next, we'll send over the amount of specified pong
 			// bytes.
-			//
-			// TODO(roasbeef): read out from pong scratch instead?
-			pongBytes := make([]byte, msg.NumPongBytes)
-			p.queueMsg(lnwire.NewPong(pongBytes), nil)
+			pong := lnwire.NewPong(p.cfg.PongBuf[0:msg.NumPongBytes])
+			p.queueMsg(pong, nil)
 
 		case *lnwire.OpenChannel,
 			*lnwire.AcceptChannel,
@@ -1564,7 +1580,6 @@ func (p *Brontide) handleError(msg *lnwire.Error) bool {
 	p.storeError(msg)
 
 	switch {
-
 	// In the case of an all-zero channel ID we want to forward the error to
 	// all channels with this peer.
 	case msg.ChanID == lnwire.ConnectionWideID:
@@ -1753,31 +1768,6 @@ func (p *Brontide) logWireMessage(msg lnwire.Message, read bool) {
 		return fmt.Sprintf("%v %v%s %v %s", summaryPrefix,
 			msgType, summary, preposition, p)
 	}))
-
-	switch m := msg.(type) {
-	case *lnwire.ChannelReestablish:
-		if m.LocalUnrevokedCommitPoint != nil {
-			m.LocalUnrevokedCommitPoint.Curve = nil
-		}
-	case *lnwire.RevokeAndAck:
-		m.NextRevocationKey.Curve = nil
-	case *lnwire.AcceptChannel:
-		m.FundingKey.Curve = nil
-		m.RevocationPoint.Curve = nil
-		m.PaymentPoint.Curve = nil
-		m.DelayedPaymentPoint.Curve = nil
-		m.HtlcPoint.Curve = nil
-		m.FirstCommitmentPoint.Curve = nil
-	case *lnwire.OpenChannel:
-		m.FundingKey.Curve = nil
-		m.RevocationPoint.Curve = nil
-		m.PaymentPoint.Curve = nil
-		m.DelayedPaymentPoint.Curve = nil
-		m.HtlcPoint.Curve = nil
-		m.FirstCommitmentPoint.Curve = nil
-	case *lnwire.FundingLocked:
-		m.NextPerCommitmentPoint.Curve = nil
-	}
 
 	prefix := "readMessage from"
 	if !read {
@@ -2043,6 +2033,7 @@ func (p *Brontide) pingHandler() {
 			"subscription: %v", err)
 		return
 	}
+	defer blockEpochs.Cancel()
 
 	var (
 		pingPayload [wire.MaxBlockHeaderPayload]byte
@@ -2136,7 +2127,7 @@ func (p *Brontide) ChannelSnapshots() []*channeldb.ChannelSnapshot {
 		}
 
 		// We'll only return a snapshot for channels that are
-		// *immedately* available for routing payments over.
+		// *immediately* available for routing payments over.
 		if activeChan.RemoteNextRevocation() == nil {
 			continue
 		}
@@ -3008,7 +2999,7 @@ func (p *Brontide) resendChanSyncMsg(cid lnwire.ChannelID) error {
 
 	if !c.RemotePub.IsEqual(p.IdentityKey()) {
 		return fmt.Errorf("ignoring channel reestablish from "+
-			"peer=%x", p.IdentityKey())
+			"peer=%x", p.IdentityKey().SerializeCompressed())
 	}
 
 	peerLog.Debugf("Re-sending channel sync message for channel %v to "+

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/btcsuite/btcutil"
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/lightningnetwork/lnd/amp"
 	"github.com/lightningnetwork/lnd/chainreg"
 	"github.com/lightningnetwork/lnd/lnrpc"
@@ -163,7 +163,7 @@ func testSendPaymentAMPInvoiceCase(net *lntest.NetworkHarness, t *harnessTest,
 	require.NoError(t.t, err)
 
 	// Also fetch Bob's invoice from ListInvoices and assert it is equal to
-	// the one recevied via the subscription.
+	// the one received via the subscription.
 	invoiceResp, err := ctx.bob.ListInvoices(
 		ctxb, &lnrpc.ListInvoiceRequest{},
 	)
@@ -245,11 +245,9 @@ func testSendPaymentAMPInvoiceRepeat(net *lntest.NetworkHarness,
 			Amt: chanAmt,
 		},
 	)
-	ctxt, _ := context.WithTimeout(ctxb, defaultTimeout)
-	err = carol.WaitForNetworkChannelOpen(ctxt, chanPoint)
+	err = carol.WaitForNetworkChannelOpen(chanPoint)
 	require.NoError(t.t, err, "carol didn't report channel")
-	ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
-	err = dave.WaitForNetworkChannelOpen(ctxt, chanPoint)
+	err = dave.WaitForNetworkChannelOpen(chanPoint)
 	require.NoError(t.t, err, "dave didn't report channel")
 
 	// Create an AMP invoice of a trivial amount, that we'll pay repeatedly
@@ -697,7 +695,7 @@ func testSendToRouteAMP(net *lntest.NetworkHarness, t *harnessTest) {
 	require.NoError(t.t, err)
 
 	// Also fetch Bob's invoice from ListInvoices and assert it is equal to
-	// the one recevied via the subscription.
+	// the one received via the subscription.
 	invoiceResp, err := ctx.bob.ListInvoices(
 		ctxb, &lnrpc.ListInvoiceRequest{},
 	)

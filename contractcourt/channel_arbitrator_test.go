@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
 	"github.com/lightningnetwork/lnd/chainntnfs"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/clock"
@@ -205,6 +205,9 @@ type chanArbTestCtx struct {
 	log ArbitratorLog
 
 	sweeper *mockSweeper
+
+	breachSubscribed     chan struct{}
+	breachResolutionChan chan struct{}
 }
 
 func (c *chanArbTestCtx) CleanUp() {
@@ -303,13 +306,17 @@ func withMarkClosed(markClosed func(*channeldb.ChannelCloseSummary,
 func createTestChannelArbitrator(t *testing.T, log ArbitratorLog,
 	opts ...testChanArbOption) (*chanArbTestCtx, error) {
 
+	chanArbCtx := &chanArbTestCtx{
+		breachSubscribed: make(chan struct{}),
+	}
+
 	chanPoint := wire.OutPoint{}
 	shortChanID := lnwire.ShortChannelID{}
 	chanEvents := &ChainEventSubscription{
 		RemoteUnilateralClosure: make(chan *RemoteUnilateralCloseInfo, 1),
 		LocalUnilateralClosure:  make(chan *LocalUnilateralCloseInfo, 1),
 		CooperativeClosure:      make(chan *CooperativeCloseInfo, 1),
-		ContractBreach:          make(chan *lnwallet.BreachRetribution, 1),
+		ContractBreach:          make(chan *BreachCloseInfo, 1),
 	}
 
 	resolutionChan := make(chan []ResolutionMsg, 1)
@@ -346,6 +353,13 @@ func createTestChannelArbitrator(t *testing.T, log ArbitratorLog,
 
 			return true
 		},
+		SubscribeBreachComplete: func(op *wire.OutPoint,
+			c chan struct{}) (bool, error) {
+
+			chanArbCtx.breachResolutionChan = c
+			chanArbCtx.breachSubscribed <- struct{}{}
+			return false, nil
+		},
 		Clock:   clock.NewDefaultClock(),
 		Sweeper: mockSweeper,
 	}
@@ -369,6 +383,7 @@ func createTestChannelArbitrator(t *testing.T, log ArbitratorLog,
 		},
 		MarkChannelClosed: func(*channeldb.ChannelCloseSummary,
 			...channeldb.ChannelStatus) error {
+
 			return nil
 		},
 		IsPendingClose:        false,
@@ -425,16 +440,16 @@ func createTestChannelArbitrator(t *testing.T, log ArbitratorLog,
 
 	chanArb := NewChannelArbitrator(*arbCfg, htlcSets, log)
 
-	return &chanArbTestCtx{
-		t:                  t,
-		chanArb:            chanArb,
-		cleanUp:            cleanUp,
-		resolvedChan:       resolvedChan,
-		resolutions:        resolutionChan,
-		log:                log,
-		incubationRequests: incubateChan,
-		sweeper:            mockSweeper,
-	}, nil
+	chanArbCtx.t = t
+	chanArbCtx.chanArb = chanArb
+	chanArbCtx.cleanUp = cleanUp
+	chanArbCtx.resolvedChan = resolvedChan
+	chanArbCtx.resolutions = resolutionChan
+	chanArbCtx.log = log
+	chanArbCtx.incubationRequests = incubateChan
+	chanArbCtx.sweeper = mockSweeper
+
+	return chanArbCtx, nil
 }
 
 // TestChannelArbitratorCooperativeClose tests that the ChannelArbitertor
@@ -661,11 +676,13 @@ func TestChannelArbitratorLocalForceClose(t *testing.T) {
 
 // TestChannelArbitratorBreachClose tests that the ChannelArbitrator goes
 // through the expected states in case we notice a breach in the chain, and
-// gracefully exits.
+// is able to properly progress the breachResolver and anchorResolver to a
+// successful resolution.
 func TestChannelArbitratorBreachClose(t *testing.T) {
 	log := &mockArbitratorLog{
 		state:     StateDefault,
 		newStates: make(chan ArbitratorState, 5),
+		resolvers: make(map[ContractResolver]struct{}),
 	}
 
 	chanArbCtx, err := createTestChannelArbitrator(t, log)
@@ -673,6 +690,8 @@ func TestChannelArbitratorBreachClose(t *testing.T) {
 		t.Fatalf("unable to create ChannelArbitrator: %v", err)
 	}
 	chanArb := chanArbCtx.chanArb
+	chanArb.cfg.PreimageDB = newMockWitnessBeacon()
+	chanArb.cfg.Registry = &mockRegistry{}
 
 	if err := chanArb.Start(nil); err != nil {
 		t.Fatalf("unable to start ChannelArbitrator: %v", err)
@@ -686,13 +705,99 @@ func TestChannelArbitratorBreachClose(t *testing.T) {
 	// It should start out in the default state.
 	chanArbCtx.AssertState(StateDefault)
 
-	// Send a breach close event.
-	chanArb.cfg.ChainEvents.ContractBreach <- &lnwallet.BreachRetribution{}
+	// We create two HTLCs, one incoming and one outgoing. We will later
+	// assert that we only receive a ResolutionMsg for the outgoing HTLC.
+	outgoingIdx := uint64(2)
 
-	// It should transition StateDefault -> StateFullyResolved.
-	chanArbCtx.AssertStateTransitions(
-		StateFullyResolved,
-	)
+	rHash1 := [lntypes.PreimageSize]byte{1, 2, 3}
+	htlc1 := channeldb.HTLC{
+		RHash:       rHash1,
+		OutputIndex: 2,
+		Incoming:    false,
+		HtlcIndex:   outgoingIdx,
+		LogIndex:    2,
+	}
+
+	rHash2 := [lntypes.PreimageSize]byte{2, 2, 2}
+	htlc2 := channeldb.HTLC{
+		RHash:       rHash2,
+		OutputIndex: 3,
+		Incoming:    true,
+		HtlcIndex:   3,
+		LogIndex:    3,
+	}
+
+	anchorRes := &lnwallet.AnchorResolution{
+		AnchorSignDescriptor: input.SignDescriptor{
+			Output: &wire.TxOut{Value: 1},
+		},
+	}
+
+	// Create the BreachCloseInfo that the chain_watcher would normally
+	// send to the channel_arbitrator.
+	breachInfo := &BreachCloseInfo{
+		BreachResolution: &BreachResolution{
+			FundingOutPoint: wire.OutPoint{},
+		},
+		AnchorResolution: anchorRes,
+		CommitSet: CommitSet{
+			ConfCommitKey: &RemoteHtlcSet,
+			HtlcSets: map[HtlcSetKey][]channeldb.HTLC{
+				RemoteHtlcSet: {htlc1, htlc2},
+			},
+		},
+		CommitHash: chainhash.Hash{},
+	}
+
+	// Send a breach close event.
+	chanArb.cfg.ChainEvents.ContractBreach <- breachInfo
+
+	// It should transition StateDefault -> StateContractClosed.
+	chanArbCtx.AssertStateTransitions(StateContractClosed)
+
+	// We should receive one ResolutionMsg as there was only one outgoing
+	// HTLC at the time of the breach.
+	select {
+	case res := <-chanArbCtx.resolutions:
+		require.Equal(t, 1, len(res))
+		require.Equal(t, outgoingIdx, res[0].HtlcIndex)
+	case <-time.After(5 * time.Second):
+		t.Fatal("expected to receive a resolution msg")
+	}
+
+	// We should now transition from StateContractClosed to
+	// StateWaitingFullResolution.
+	chanArbCtx.AssertStateTransitions(StateWaitingFullResolution)
+
+	// One of the resolvers should be an anchor resolver and the other
+	// should be a breach resolver.
+	require.Equal(t, 2, len(chanArb.activeResolvers))
+
+	var anchorExists, breachExists bool
+	for _, resolver := range chanArb.activeResolvers {
+		switch resolver.(type) {
+		case *anchorResolver:
+			anchorExists = true
+		case *breachResolver:
+			breachExists = true
+		default:
+			t.Fatalf("did not expect resolver %T", resolver)
+		}
+	}
+	require.True(t, anchorExists && breachExists)
+
+	// The anchor resolver is expected to re-offer the anchor input to the
+	// sweeper.
+	<-chanArbCtx.sweeper.sweptInputs
+
+	// Wait for SubscribeBreachComplete to be called.
+	<-chanArbCtx.breachSubscribed
+
+	// We'll now close the breach channel so that the state transitions to
+	// StateFullyResolved.
+	close(chanArbCtx.breachResolutionChan)
+
+	chanArbCtx.AssertStateTransitions(StateFullyResolved)
 
 	// It should also mark the channel as resolved.
 	select {
@@ -724,11 +829,7 @@ func TestChannelArbitratorLocalForceClosePendingHtlc(t *testing.T) {
 	}
 	defer chanArb.Stop()
 
-	// Create htlcUpdates channel.
-	htlcUpdates := make(chan *ContractUpdate)
-
 	signals := &ContractSignals{
-		HtlcUpdates: htlcUpdates,
 		ShortChanID: lnwire.ShortChannelID{},
 	}
 	chanArb.UpdateContractSignals(signals)
@@ -759,10 +860,12 @@ func TestChannelArbitratorLocalForceClosePendingHtlc(t *testing.T) {
 		htlc, outgoingDustHtlc, incomingDustHtlc,
 	}
 
-	htlcUpdates <- &ContractUpdate{
+	newUpdate := &ContractUpdate{
 		HtlcKey: LocalHtlcSet,
 		Htlcs:   htlcSet,
 	}
+	err = chanArb.notifyContractUpdate(newUpdate)
+	require.NoError(t, err)
 
 	errChan := make(chan error, 1)
 	respChan := make(chan *wire.MsgTx, 1)
@@ -1318,12 +1421,14 @@ func TestChannelArbitratorPersistence(t *testing.T) {
 // TestChannelArbitratorForceCloseBreachedChannel tests that the channel
 // arbitrator is able to handle a channel in the process of being force closed
 // is breached by the remote node. In these cases we expect the
-// ChannelArbitrator to gracefully exit, as the breach is handled by other
-// subsystems.
+// ChannelArbitrator to properly execute the breachResolver flow and then
+// gracefully exit once the breachResolver receives the signal from what would
+// normally be the breacharbiter.
 func TestChannelArbitratorForceCloseBreachedChannel(t *testing.T) {
 	log := &mockArbitratorLog{
 		state:     StateDefault,
 		newStates: make(chan ArbitratorState, 5),
+		resolvers: make(map[ContractResolver]struct{}),
 	}
 
 	chanArbCtx, err := createTestChannelArbitrator(t, log)
@@ -1389,6 +1494,20 @@ func TestChannelArbitratorForceCloseBreachedChannel(t *testing.T) {
 		t.Fatalf("no response received")
 	}
 
+	// Before restarting, we'll need to modify the arbitrator log to have
+	// a set of contract resolutions and a commit set.
+	log.resolutions = &ContractResolutions{
+		BreachResolution: &BreachResolution{
+			FundingOutPoint: wire.OutPoint{},
+		},
+	}
+	log.commitSet = &CommitSet{
+		ConfCommitKey: &RemoteHtlcSet,
+		HtlcSets: map[HtlcSetKey][]channeldb.HTLC{
+			RemoteHtlcSet: {},
+		},
+	}
+
 	// We mimic that the channel is breached while the channel arbitrator
 	// is down. This means that on restart it will be started with a
 	// pending close channel, of type BreachClose.
@@ -1402,7 +1521,18 @@ func TestChannelArbitratorForceCloseBreachedChannel(t *testing.T) {
 	}
 	defer chanArbCtx.CleanUp()
 
-	// Finally it should advance to StateFullyResolved.
+	// We should transition to StateContractClosed.
+	chanArbCtx.AssertStateTransitions(
+		StateContractClosed, StateWaitingFullResolution,
+	)
+
+	// Wait for SubscribeBreachComplete to be called.
+	<-chanArbCtx.breachSubscribed
+
+	// We'll close the breachResolutionChan to cleanup the breachResolver
+	// and make the state transition to StateFullyResolved.
+	close(chanArbCtx.breachResolutionChan)
+
 	chanArbCtx.AssertStateTransitions(StateFullyResolved)
 
 	// It should also mark the channel as resolved.
@@ -1417,7 +1547,6 @@ func TestChannelArbitratorForceCloseBreachedChannel(t *testing.T) {
 // TestChannelArbitratorCommitFailure tests that the channel arbitrator is able
 // to recover from a failed CommitState call at restart.
 func TestChannelArbitratorCommitFailure(t *testing.T) {
-
 	testCases := []struct {
 
 		// closeType is the type of channel close we want ot test.
@@ -1505,6 +1634,7 @@ func TestChannelArbitratorCommitFailure(t *testing.T) {
 		chanArb.cfg.MarkChannelClosed = func(
 			*channeldb.ChannelCloseSummary,
 			...channeldb.ChannelStatus) error {
+
 			close(closed)
 			return nil
 		}
@@ -1717,9 +1847,7 @@ func TestChannelArbitratorDanglingCommitForceClose(t *testing.T) {
 			// Now that our channel arb has started, we'll set up
 			// its contract signals channel so we can send it
 			// various HTLC updates for this test.
-			htlcUpdates := make(chan *ContractUpdate)
 			signals := &ContractSignals{
-				HtlcUpdates: htlcUpdates,
 				ShortChanID: lnwire.ShortChannelID{},
 			}
 			chanArb.UpdateContractSignals(signals)
@@ -1740,10 +1868,12 @@ func TestChannelArbitratorDanglingCommitForceClose(t *testing.T) {
 				HtlcIndex:     htlcIndex,
 				RefundTimeout: htlcExpiry,
 			}
-			htlcUpdates <- &ContractUpdate{
+			newUpdate := &ContractUpdate{
 				HtlcKey: htlcKey,
 				Htlcs:   []channeldb.HTLC{danglingHTLC},
 			}
+			err = chanArb.notifyContractUpdate(newUpdate)
+			require.NoError(t, err)
 
 			// At this point, we now have a split commitment state
 			// from the PoV of the channel arb. There's now an HTLC
@@ -1912,9 +2042,7 @@ func TestChannelArbitratorPendingExpiredHTLC(t *testing.T) {
 	// Now that our channel arb has started, we'll set up
 	// its contract signals channel so we can send it
 	// various HTLC updates for this test.
-	htlcUpdates := make(chan *ContractUpdate)
 	signals := &ContractSignals{
-		HtlcUpdates: htlcUpdates,
 		ShortChanID: lnwire.ShortChannelID{},
 	}
 	chanArb.UpdateContractSignals(signals)
@@ -1929,10 +2057,12 @@ func TestChannelArbitratorPendingExpiredHTLC(t *testing.T) {
 		HtlcIndex:     htlcIndex,
 		RefundTimeout: htlcExpiry,
 	}
-	htlcUpdates <- &ContractUpdate{
+	newUpdate := &ContractUpdate{
 		HtlcKey: RemoteHtlcSet,
 		Htlcs:   []channeldb.HTLC{pendingHTLC},
 	}
+	err = chanArb.notifyContractUpdate(newUpdate)
+	require.NoError(t, err)
 
 	// We will advance the uptime to 10 seconds which should be still within
 	// the grace period and should not trigger going to chain.
@@ -2039,6 +2169,7 @@ func TestRemoteCloseInitiator(t *testing.T) {
 			// about setting of channel status.
 			mockMarkClosed := func(_ *channeldb.ChannelCloseSummary,
 				statuses ...channeldb.ChannelStatus) error {
+
 				for _, status := range statuses {
 					err := alice.State().ApplyChanStatus(status)
 					if err != nil {
@@ -2090,6 +2221,7 @@ func TestRemoteCloseInitiator(t *testing.T) {
 			if !alice.State().HasChanStatus(
 				channeldb.ChanStatusRemoteCloseInitiator,
 			) {
+
 				t.Fatalf("expected remote close initiator, "+
 					"got: %v", alice.State().ChanStatus())
 			}
@@ -2219,7 +2351,6 @@ func TestFindCommitmentDeadline(t *testing.T) {
 			require.Equal(t, tc.deadline, deadline)
 		})
 	}
-
 }
 
 // TestSweepAnchors checks the sweep transactions are created using the
@@ -2342,7 +2473,6 @@ func TestSweepAnchors(t *testing.T) {
 		t, expectedRemoteDeadline, deadlines[2],
 		"remote deadline not matched",
 	)
-
 }
 
 // TestChannelArbitratorAnchors asserts that the commitment tx anchor is swept.
@@ -2399,11 +2529,7 @@ func TestChannelArbitratorAnchors(t *testing.T) {
 		}
 	}()
 
-	// Create htlcUpdates channel.
-	htlcUpdates := make(chan *ContractUpdate)
-
 	signals := &ContractSignals{
-		HtlcUpdates: htlcUpdates,
 		ShortChanID: lnwire.ShortChannelID{},
 	}
 	chanArb.UpdateContractSignals(signals)
@@ -2427,7 +2553,7 @@ func TestChannelArbitratorAnchors(t *testing.T) {
 
 	// We now send two HTLC updates, one for local HTLC set and the other
 	// for remote HTLC set.
-	htlcUpdates <- &ContractUpdate{
+	newUpdate := &ContractUpdate{
 		HtlcKey: LocalHtlcSet,
 		// This will make the deadline of the local anchor resolution
 		// to be htlcWithPreimage's CLTV minus heightHint since the
@@ -2435,13 +2561,18 @@ func TestChannelArbitratorAnchors(t *testing.T) {
 		// preimage available.
 		Htlcs: []channeldb.HTLC{htlc, htlcWithPreimage},
 	}
-	htlcUpdates <- &ContractUpdate{
+	err = chanArb.notifyContractUpdate(newUpdate)
+	require.NoError(t, err)
+
+	newUpdate = &ContractUpdate{
 		HtlcKey: RemoteHtlcSet,
 		// This will make the deadline of the remote anchor resolution
 		// to be htlcWithPreimage's CLTV minus heightHint because the
 		// incoming HTLC (toRemoteHTLCs) has a lower CLTV.
 		Htlcs: []channeldb.HTLC{htlc, htlcWithPreimage},
 	}
+	err = chanArb.notifyContractUpdate(newUpdate)
+	require.NoError(t, err)
 
 	errChan := make(chan error, 1)
 	respChan := make(chan *wire.MsgTx, 1)
@@ -2571,7 +2702,6 @@ func TestChannelArbitratorAnchors(t *testing.T) {
 		htlcWithPreimage.RefundTimeout-heightHint,
 		chanArbCtx.sweeper.deadlines[1],
 	)
-
 }
 
 // putResolverReportInChannel returns a put report function which will pipe
@@ -2607,6 +2737,7 @@ type mockChannel struct {
 
 func (m *mockChannel) NewAnchorResolutions() (*lnwallet.AnchorResolutions,
 	error) {
+
 	if m.anchorResolutions != nil {
 		return m.anchorResolutions, nil
 	}

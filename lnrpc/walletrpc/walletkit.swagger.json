@@ -52,7 +52,8 @@
               "UNKNOWN",
               "WITNESS_PUBKEY_HASH",
               "NESTED_WITNESS_PUBKEY_HASH",
-              "HYBRID_NESTED_WITNESS_PUBKEY_HASH"
+              "HYBRID_NESTED_WITNESS_PUBKEY_HASH",
+              "TAPROOT_PUBKEY"
             ],
             "default": "UNKNOWN"
           }
@@ -364,6 +365,40 @@
         ]
       }
     },
+    "/v2/wallet/psbt/sign": {
+      "post": {
+        "summary": "SignPsbt expects a partial transaction with all inputs and outputs fully\ndeclared and tries to sign all unsigned inputs that have all required fields\n(UTXO information, BIP32 derivation information, witness or sig scripts)\nset.\nIf no error is returned, the PSBT is ready to be given to the next signer or\nto be finalized if lnd was the last signer.",
+        "description": "NOTE: This RPC only signs inputs (and only those it can sign), it does not\nperform any other tasks (such as coin selection, UTXO locking or\ninput/output/fee value validation, PSBT finalization). Any input that is\nincomplete will be skipped.",
+        "operationId": "WalletKit_SignPsbt",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/walletrpcSignPsbtResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/walletrpcSignPsbtRequest"
+            }
+          }
+        ],
+        "tags": [
+          "WalletKit"
+        ]
+      }
+    },
     "/v2/wallet/send": {
       "post": {
         "summary": "SendOutputs is similar to the existing sendmany call in Bitcoind, and\nallows the caller to create a transaction that sends to several outputs at\nonce. This is ideal when wanting to batch create a set of transactions.",
@@ -521,7 +556,7 @@
     },
     "/v2/wallet/utxos": {
       "post": {
-        "summary": "ListUnspent returns a list of all utxos spendable by the wallet with a\nnumber of confirmations between the specified minimum and maximum.",
+        "summary": "ListUnspent returns a list of all utxos spendable by the wallet with a\nnumber of confirmations between the specified minimum and maximum. By\ndefault, all utxos are listed. To list only the unconfirmed utxos, set\nthe unconfirmed_only to true.",
         "operationId": "WalletKit_ListUnspent",
         "responses": {
           "200": {
@@ -661,10 +696,12 @@
         "WITNESS_PUBKEY_HASH",
         "NESTED_PUBKEY_HASH",
         "UNUSED_WITNESS_PUBKEY_HASH",
-        "UNUSED_NESTED_PUBKEY_HASH"
+        "UNUSED_NESTED_PUBKEY_HASH",
+        "TAPROOT_PUBKEY",
+        "UNUSED_TAPROOT_PUBKEY"
       ],
       "default": "WITNESS_PUBKEY_HASH",
-      "description": "- `p2wkh`: Pay to witness key hash (`WITNESS_PUBKEY_HASH` = 0)\n- `np2wkh`: Pay to nested witness key hash (`NESTED_PUBKEY_HASH` = 1)",
+      "description": "- `p2wkh`: Pay to witness key hash (`WITNESS_PUBKEY_HASH` = 0)\n- `np2wkh`: Pay to nested witness key hash (`NESTED_PUBKEY_HASH` = 1)\n- `p2tr`: Pay to taproot pubkey (`TAPROOT_PUBKEY` = 4)",
       "title": "`AddressType` has to be one of:"
     },
     "lnrpcOutPoint": {
@@ -685,6 +722,52 @@
           "description": "The index of the output on the transaction."
         }
       }
+    },
+    "lnrpcOutputDetail": {
+      "type": "object",
+      "properties": {
+        "output_type": {
+          "$ref": "#/definitions/lnrpcOutputScriptType",
+          "title": "The type of the output"
+        },
+        "address": {
+          "type": "string",
+          "title": "The address"
+        },
+        "pk_script": {
+          "type": "string",
+          "title": "The pkscript in hex"
+        },
+        "output_index": {
+          "type": "string",
+          "format": "int64",
+          "title": "The output index used in the raw transaction"
+        },
+        "amount": {
+          "type": "string",
+          "format": "int64",
+          "title": "The value of the output coin in satoshis"
+        },
+        "is_our_address": {
+          "type": "boolean",
+          "title": "Denotes if the output is controlled by the internal wallet"
+        }
+      }
+    },
+    "lnrpcOutputScriptType": {
+      "type": "string",
+      "enum": [
+        "SCRIPT_TYPE_PUBKEY_HASH",
+        "SCRIPT_TYPE_SCRIPT_HASH",
+        "SCRIPT_TYPE_WITNESS_V0_PUBKEY_HASH",
+        "SCRIPT_TYPE_WITNESS_V0_SCRIPT_HASH",
+        "SCRIPT_TYPE_PUBKEY",
+        "SCRIPT_TYPE_MULTISIG",
+        "SCRIPT_TYPE_NULLDATA",
+        "SCRIPT_TYPE_NON_STANDARD",
+        "SCRIPT_TYPE_WITNESS_UNKNOWN"
+      ],
+      "default": "SCRIPT_TYPE_PUBKEY_HASH"
     },
     "lnrpcTransaction": {
       "type": "object",
@@ -727,7 +810,14 @@
           "items": {
             "type": "string"
           },
-          "title": "Addresses that received funds for this transaction"
+          "description": "Addresses that received funds for this transaction. Deprecated as it is\nnow incorporated in the output_details field."
+        },
+        "output_details": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/lnrpcOutputDetail"
+          },
+          "title": "Outputs that received funds for this transaction"
         },
         "raw_tx_hex": {
           "type": "string",
@@ -928,7 +1018,8 @@
         "UNKNOWN",
         "WITNESS_PUBKEY_HASH",
         "NESTED_WITNESS_PUBKEY_HASH",
-        "HYBRID_NESTED_WITNESS_PUBKEY_HASH"
+        "HYBRID_NESTED_WITNESS_PUBKEY_HASH",
+        "TAPROOT_PUBKEY"
       ],
       "default": "UNKNOWN"
     },
@@ -1242,6 +1333,10 @@
         "account": {
           "type": "string",
           "description": "An optional filter to only include outputs belonging to an account."
+        },
+        "unconfirmed_only": {
+          "type": "boolean",
+          "title": "When min_confs and max_confs are zero, setting false implicitly\noverrides max_confs to be MaxInt32, otherwise max_confs remains\nzero. An error is returned if the value is true and both min_confs\nand max_confs are non-zero. (default: false)"
         }
       }
     },
@@ -1389,6 +1484,26 @@
           "type": "string",
           "format": "byte",
           "description": "The serialized transaction sent out on the network."
+        }
+      }
+    },
+    "walletrpcSignPsbtRequest": {
+      "type": "object",
+      "properties": {
+        "funded_psbt": {
+          "type": "string",
+          "format": "byte",
+          "description": "The PSBT that should be signed. The PSBT must contain all required inputs,\noutputs, UTXO data and custom fields required to identify the signing key."
+        }
+      }
+    },
+    "walletrpcSignPsbtResponse": {
+      "type": "object",
+      "properties": {
+        "signed_psbt": {
+          "type": "string",
+          "format": "byte",
+          "description": "The signed transaction in PSBT format."
         }
       }
     },

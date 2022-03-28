@@ -9,8 +9,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
 	"github.com/davecgh/go-spew/spew"
 	"github.com/lightningnetwork/lnd/chainntnfs"
 	"github.com/lightningnetwork/lnd/channeldb"
@@ -290,7 +290,7 @@ type Switch struct {
 
 	// blockEpochStream is an active block epoch event stream backed by an
 	// active ChainNotifier instance. This will be used to retrieve the
-	// lastest height of the chain.
+	// latest height of the chain.
 	blockEpochStream *chainntnfs.BlockEpochEvent
 
 	// pendingSettleFails is the set of settle/fail entries that we need to
@@ -728,7 +728,7 @@ func (s *Switch) ForwardPackets(linkQuit chan struct{},
 	return nil
 }
 
-// logFwdErrs logs any errors received on `fwdChan`
+// logFwdErrs logs any errors received on `fwdChan`.
 func (s *Switch) logFwdErrs(num *int, wg *sync.WaitGroup, fwdChan chan error) {
 	defer s.wg.Done()
 
@@ -1130,7 +1130,7 @@ func (s *Switch) handlePacketForward(packet *htlcPacket) error {
 		// this htlc. The reason for randomization is to evenly
 		// distribute the htlc load without making assumptions about
 		// what the best channel is.
-		destination := destinations[rand.Intn(len(destinations))]
+		destination := destinations[rand.Intn(len(destinations))] // nolint:gosec
 
 		// Retrieve the incoming link by its ShortChannelID. Note that
 		// the incomingChanID is never set to hop.Source here.
@@ -1846,7 +1846,7 @@ func (s *Switch) Start() error {
 		return errors.New("htlc switch already started")
 	}
 
-	log.Infof("Starting HTLC Switch")
+	log.Infof("HTLC Switch starting")
 
 	blockEpochStream, err := s.cfg.Notifier.RegisterBlockEpochNtfn(nil)
 	if err != nil {

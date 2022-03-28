@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
 	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/invoicesrpc"
 	"github.com/lightningnetwork/lnd/lntest"
@@ -16,7 +16,6 @@ import (
 )
 
 func testMultiHopHtlcClaims(net *lntest.NetworkHarness, t *harnessTest) {
-
 	type testCase struct {
 		name string
 		test func(net *lntest.NetworkHarness, t *harnessTest, alice,
@@ -99,7 +98,7 @@ func testMultiHopHtlcClaims(net *lntest.NetworkHarness, t *harnessTest) {
 						"%s/%s ----\n",
 					testName, subTest.name,
 				)
-				net.Alice.AddToLog(logLine)
+				net.Alice.AddToLogf(logLine)
 
 				success := ht.t.Run(subTest.name, func(t *testing.T) {
 					ht := newHarnessTest(t, net)
@@ -180,7 +179,6 @@ func checkPaymentStatus(node *lntest.HarnessNode, preimage lntypes.Preimage,
 		}
 
 		switch status {
-
 		// If this expected status is SUCCEEDED, we expect the final preimage.
 		case lnrpc.Payment_SUCCEEDED:
 			if p.PaymentPreimage != preimage.String() {
@@ -195,7 +193,6 @@ func checkPaymentStatus(node *lntest.HarnessNode, preimage lntypes.Preimage,
 					p.PaymentPreimage)
 			}
 		}
-
 	}
 
 	if !found {
@@ -209,8 +206,6 @@ func checkPaymentStatus(node *lntest.HarnessNode, preimage lntypes.Preimage,
 func createThreeHopNetwork(t *harnessTest, net *lntest.NetworkHarness,
 	alice, bob *lntest.HarnessNode, carolHodl bool, c lnrpc.CommitmentType) (
 	*lnrpc.ChannelPoint, *lnrpc.ChannelPoint, *lntest.HarnessNode) {
-
-	ctxb := context.Background()
 
 	net.EnsureConnected(t.t, alice, bob)
 
@@ -242,14 +237,12 @@ func createThreeHopNetwork(t *harnessTest, net *lntest.NetworkHarness,
 		},
 	)
 
-	ctxt, _ := context.WithTimeout(ctxb, defaultTimeout)
-	err := alice.WaitForNetworkChannelOpen(ctxt, aliceChanPoint)
+	err := alice.WaitForNetworkChannelOpen(aliceChanPoint)
 	if err != nil {
 		t.Fatalf("alice didn't report channel: %v", err)
 	}
 
-	ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
-	err = bob.WaitForNetworkChannelOpen(ctxt, aliceChanPoint)
+	err = bob.WaitForNetworkChannelOpen(aliceChanPoint)
 	if err != nil {
 		t.Fatalf("bob didn't report channel: %v", err)
 	}
@@ -289,18 +282,15 @@ func createThreeHopNetwork(t *harnessTest, net *lntest.NetworkHarness,
 			FundingShim:    bobFundingShim,
 		},
 	)
-	ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
-	err = bob.WaitForNetworkChannelOpen(ctxt, bobChanPoint)
+	err = bob.WaitForNetworkChannelOpen(bobChanPoint)
 	if err != nil {
 		t.Fatalf("alice didn't report channel: %v", err)
 	}
-	ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
-	err = carol.WaitForNetworkChannelOpen(ctxt, bobChanPoint)
+	err = carol.WaitForNetworkChannelOpen(bobChanPoint)
 	if err != nil {
 		t.Fatalf("bob didn't report channel: %v", err)
 	}
-	ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
-	err = alice.WaitForNetworkChannelOpen(ctxt, bobChanPoint)
+	err = alice.WaitForNetworkChannelOpen(bobChanPoint)
 	if err != nil {
 		t.Fatalf("bob didn't report channel: %v", err)
 	}

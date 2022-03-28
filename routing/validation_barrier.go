@@ -1,23 +1,11 @@
 package routing
 
 import (
-	"errors"
 	"sync"
 
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/routing/route"
-)
-
-var (
-	// ErrVBarrierShuttingDown signals that the barrier has been requested
-	// to shutdown, and that the caller should not treat the wait condition
-	// as fulfilled.
-	ErrVBarrierShuttingDown = errors.New("validation barrier shutting down")
-
-	// ErrParentValidationFailed signals that the validation of a
-	// dependent's parent failed, so the dependent must not be processed.
-	ErrParentValidationFailed = errors.New("parent validation failed")
 )
 
 // validationSignals contains two signals which allows the ValidationBarrier to
@@ -40,7 +28,7 @@ type validationSignals struct {
 // validate the item on the left of the arrow before that on the right.
 type ValidationBarrier struct {
 	// validationSemaphore is a channel of structs which is used as a
-	// sempahore. Initially we'll fill this with a buffered channel of the
+	// semaphore. Initially we'll fill this with a buffered channel of the
 	// size of the number of active requests. Each new job will consume
 	// from this channel, then restore the value upon completion.
 	validationSemaphore chan struct{}
@@ -80,7 +68,7 @@ func NewValidationBarrier(numActiveReqs int,
 		quit:                 quitChan,
 	}
 
-	// We'll first initialize a set of sempahores to limit our concurrency
+	// We'll first initialize a set of semaphores to limit our concurrency
 	// when validating incoming requests in parallel.
 	v.validationSemaphore = make(chan struct{}, numActiveReqs)
 	for i := 0; i < numActiveReqs; i++ {
@@ -228,9 +216,11 @@ func (v *ValidationBarrier) WaitForDependants(job interface{}) error {
 	if ok {
 		select {
 		case <-v.quit:
-			return ErrVBarrierShuttingDown
+			return newErrf(ErrVBarrierShuttingDown,
+				"validation barrier shutting down")
 		case <-signals.deny:
-			return ErrParentValidationFailed
+			return newErrf(ErrParentValidationFailed,
+				"parent validation failed")
 		case <-signals.allow:
 			return nil
 		}

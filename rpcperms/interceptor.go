@@ -24,7 +24,7 @@ type rpcState uint8
 
 const (
 	// waitingToStart indicates that we're at the beginning of the startup
-	// process. In a cluster evironment this may mean that we're waiting to
+	// process. In a cluster environment this may mean that we're waiting to
 	// become the leader in which case RPC calls will be disabled until
 	// this instance has been elected as leader.
 	waitingToStart rpcState = iota
@@ -40,7 +40,7 @@ const (
 	walletLocked
 
 	// walletUnlocked means that the wallet has been unlocked, but the full
-	// RPC server is not yeat ready.
+	// RPC server is not yet ready.
 	walletUnlocked
 
 	// rpcActive means that the RPC server is ready to accept calls.
@@ -51,7 +51,7 @@ const (
 )
 
 var (
-	// ErrWaitingToStart is returned if LND is still wating to start,
+	// ErrWaitingToStart is returned if LND is still waiting to start,
 	// possibly blocked until elected as the leader.
 	ErrWaitingToStart = fmt.Errorf("waiting to start, RPC services not " +
 		"available")
@@ -695,7 +695,6 @@ func (r *InterceptorChain) checkRPCState(srv interface{}) error {
 	r.RUnlock()
 
 	switch state {
-
 	// Do not accept any RPC calls (unless to the state service) until LND
 	// has not started.
 	case waitingToStart:
@@ -910,7 +909,7 @@ func (r *InterceptorChain) middlewareRegistered() bool {
 
 // acceptRequest sends an intercept request to all middlewares that have
 // registered for it. This means either a middleware has requested read-only
-// access or the request actually has a macaroon which a caveat the middleware
+// access or the request actually has a macaroon with a caveat the middleware
 // registered for.
 func (r *InterceptorChain) acceptRequest(requestID uint64,
 	msg *InterceptionRequest) error {
@@ -928,6 +927,10 @@ func (r *InterceptorChain) acceptRequest(requestID uint64,
 		if !hasCustomCaveat && !middleware.readOnly {
 			continue
 		}
+
+		msg.CustomCaveatCondition = macaroons.GetCustomCaveatCondition(
+			msg.Macaroon, middleware.customCaveatName,
+		)
 
 		resp, err := middleware.intercept(requestID, msg)
 
@@ -974,6 +977,10 @@ func (r *InterceptorChain) interceptResponse(ctx context.Context,
 		if !hasCustomCaveat && !middleware.readOnly {
 			continue
 		}
+
+		msg.CustomCaveatCondition = macaroons.GetCustomCaveatCondition(
+			msg.Macaroon, middleware.customCaveatName,
+		)
 
 		resp, err := middleware.intercept(requestID, msg)
 

@@ -9,11 +9,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/integration/rpctest"
 	"github.com/btcsuite/btcd/rpcclient"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
 	"github.com/go-errors/errors"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/lnrpc"
@@ -528,7 +527,6 @@ func assertConnected(t *harnessTest, alice, bob *lntest.HarnessNode) {
 		}
 
 		return nil
-
 	}, defaultTimeout)
 	require.NoError(t.t, err)
 }
@@ -571,7 +569,6 @@ func assertNotConnected(t *harnessTest, alice, bob *lntest.HarnessNode) {
 		}
 
 		return nil
-
 	}, defaultTimeout)
 	require.NoError(t.t, err)
 }
@@ -591,9 +588,8 @@ func shutdownAndAssert(net *lntest.NetworkHarness, t *harnessTest,
 
 // assertChannelBalanceResp makes a ChannelBalance request and checks the
 // returned response matches the expected.
-func assertChannelBalanceResp(t *harnessTest,
-	node *lntest.HarnessNode,
-	expected *lnrpc.ChannelBalanceResponse) { // nolint:interfacer
+func assertChannelBalanceResp(t *harnessTest, node *lntest.HarnessNode,
+	expected *lnrpc.ChannelBalanceResponse) {
 
 	resp := getChannelBalance(t, node)
 	require.True(t.t, proto.Equal(expected, resp), "balance is incorrect")
@@ -691,7 +687,7 @@ func assertChannelPolicy(t *harnessTest, node *lntest.HarnessNode,
 // assertMinerBlockHeightDelta ensures that tempMiner is 'delta' blocks ahead
 // of miner.
 func assertMinerBlockHeightDelta(t *harnessTest,
-	miner, tempMiner *rpctest.Harness, delta int32) {
+	miner, tempMiner *lntest.HarnessMiner, delta int32) {
 
 	// Ensure the chain lengths are what we expect.
 	var predErr error
@@ -1007,6 +1003,7 @@ func assertChannelConstraintsEqual(
 func assertAmountPaid(t *harnessTest, channelName string,
 	node *lntest.HarnessNode, chanPoint wire.OutPoint, amountSent,
 	amountReceived int64) {
+
 	ctxb := context.Background()
 
 	checkAmountPaid := func() error {
@@ -1030,6 +1027,7 @@ func assertAmountPaid(t *harnessTest, channelName string,
 			}
 			if channel.TotalSatoshisReceived !=
 				amountReceived {
+
 				return fmt.Errorf("%v: incorrect amount"+
 					" received: %v != %v",
 					channelName,
@@ -1071,6 +1069,7 @@ func assertAmountPaid(t *harnessTest, channelName string,
 // node reports the expected number of pending channels.
 func assertNumPendingChannels(t *harnessTest, node *lntest.HarnessNode,
 	expWaitingClose, expPendingForceClose int) {
+
 	ctxb := context.Background()
 
 	var predErr error
@@ -1397,6 +1396,7 @@ func verifyCloseUpdate(chanUpdate *lnrpc.ChannelEventUpdate,
 	case *lnrpc.ChannelEventUpdate_ClosedChannel:
 		if chanUpdate.Type !=
 			lnrpc.ChannelEventUpdate_CLOSED_CHANNEL {
+
 			return fmt.Errorf("update type mismatch: expected %v, got %v",
 				lnrpc.ChannelEventUpdate_CLOSED_CHANNEL,
 				chanUpdate.Type)
@@ -1435,6 +1435,7 @@ func verifyCloseUpdate(chanUpdate *lnrpc.ChannelEventUpdate,
 // reaches the desired number of total channels.
 func assertNodeNumChannels(t *harnessTest, node *lntest.HarnessNode,
 	numChannels int) {
+
 	ctxb := context.Background()
 
 	// Poll node for its list of channels.
@@ -1629,9 +1630,7 @@ func getSpendingTxInMempool(t *harnessTest, miner *rpcclient.Client,
 
 				for _, txIn := range msgTx.TxIn {
 					input := txIn.PreviousOutPoint
-					if _, ok := inputSet[input]; ok {
-						delete(inputSet, input)
-					}
+					delete(inputSet, input)
 				}
 
 				if len(inputSet) > 0 {
@@ -1783,14 +1782,77 @@ func assertChannelPolicyUpdate(t *testing.T, node *lntest.HarnessNode,
 	advertisingNode string, policy *lnrpc.RoutingPolicy,
 	chanPoint *lnrpc.ChannelPoint, includeUnannounced bool) {
 
-	ctxb := context.Background()
-	ctxt, cancel := context.WithTimeout(ctxb, lntest.DefaultTimeout)
-	defer cancel()
-
 	require.NoError(
 		t, node.WaitForChannelPolicyUpdate(
-			ctxt, advertisingNode, policy,
+			advertisingNode, policy,
 			chanPoint, includeUnannounced,
 		), "error while waiting for channel update",
 	)
+}
+
+func transactionInWallet(node *lntest.HarnessNode, txid chainhash.Hash) bool {
+	txStr := txid.String()
+
+	txResp, err := node.GetTransactions(
+		context.Background(), &lnrpc.GetTransactionsRequest{},
+	)
+	if err != nil {
+		return false
+	}
+
+	for _, txn := range txResp.Transactions {
+		if txn.TxHash == txStr {
+			return true
+		}
+	}
+
+	return false
+}
+
+func assertTransactionInWallet(t *testing.T, node *lntest.HarnessNode, txID chainhash.Hash) {
+	t.Helper()
+
+	err := wait.Predicate(func() bool {
+		return transactionInWallet(node, txID)
+	}, defaultTimeout)
+	require.NoError(
+		t, err, fmt.Sprintf("transaction %v not found in wallet", txID),
+	)
+}
+
+func assertTransactionNotInWallet(t *testing.T, node *lntest.HarnessNode,
+	txID chainhash.Hash) {
+
+	t.Helper()
+
+	err := wait.Predicate(func() bool {
+		return !transactionInWallet(node, txID)
+	}, defaultTimeout)
+	require.NoError(
+		t, err, fmt.Sprintf("transaction %v found in wallet", txID),
+	)
+}
+
+func assertAnchorOutputLost(t *harnessTest, node *lntest.HarnessNode,
+	chanPoint wire.OutPoint) {
+
+	pendingChansRequest := &lnrpc.PendingChannelsRequest{}
+	err := wait.Predicate(func() bool {
+		resp, pErr := node.PendingChannels(
+			context.Background(), pendingChansRequest,
+		)
+		if pErr != nil {
+			return false
+		}
+
+		for _, pendingChan := range resp.PendingForceClosingChannels {
+			if pendingChan.Channel.ChannelPoint == chanPoint.String() {
+				return (pendingChan.Anchor ==
+					lnrpc.PendingChannelsResponse_ForceClosedChannel_LOST)
+			}
+		}
+
+		return false
+	}, defaultTimeout)
+	require.NoError(t.t, err, "anchor doesn't show as being lost")
 }

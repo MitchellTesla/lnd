@@ -33,6 +33,10 @@ var allTestCases = []*testCase{
 		test: testUpdateChannelPolicy,
 	},
 	{
+		name: "update channel policy fee rate accuracy",
+		test: testUpdateChannelPolicyFeeRateAccuracy,
+	},
+	{
 		name: "open channel reorg test",
 		test: testOpenChannelAfterReorg,
 	},
@@ -152,6 +156,10 @@ var allTestCases = []*testCase{
 	{
 		name: "derive shared key",
 		test: testDeriveSharedKey,
+	},
+	{
+		name: "sign output raw",
+		test: testSignOutputRaw,
 	},
 	{
 		name: "async payments benchmark",
@@ -284,8 +292,16 @@ var allTestCases = []*testCase{
 		test: testPsbtChanFundingExternal,
 	},
 	{
+		name: "sign psbt",
+		test: testSignPsbt,
+	},
+	{
 		name: "batch channel funding",
 		test: testBatchChanFunding,
+	},
+	{
+		name: "psbt channel funding single step",
+		test: testPsbtChanFundingSingleStep,
 	},
 	{
 		name: "sendtoroute multi path payment",
@@ -366,5 +382,13 @@ var allTestCases = []*testCase{
 	{
 		name: "remote signer",
 		test: testRemoteSigner,
+	},
+	{
+		name: "3rd party anchor spend",
+		test: testAnchorThirdPartySpend,
+	},
+	{
+		name: "taproot",
+		test: testTaproot,
 	},
 }

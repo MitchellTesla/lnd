@@ -45,7 +45,7 @@ const (
 	// DefaultMaxMcHistory is the default maximum history size.
 	DefaultMaxMcHistory = 1000
 
-	// DefaultMcFlushInterval is the defaul inteval we use to flush MC state
+	// DefaultMcFlushInterval is the default interval we use to flush MC state
 	// to the database.
 	DefaultMcFlushInterval = time.Second
 
@@ -363,7 +363,9 @@ func (m *MissionControl) GetHistorySnapshot() *MissionControlSnapshot {
 // ImportHistory imports the set of mission control results provided to our
 // in-memory state. These results are not persisted, so will not survive
 // restarts.
-func (m *MissionControl) ImportHistory(history *MissionControlSnapshot) error {
+func (m *MissionControl) ImportHistory(history *MissionControlSnapshot,
+	force bool) error {
+
 	if history == nil {
 		return errors.New("cannot import nil history")
 	}
@@ -374,7 +376,7 @@ func (m *MissionControl) ImportHistory(history *MissionControlSnapshot) error {
 	log.Infof("Importing history snapshot with %v pairs to mission control",
 		len(history.Pairs))
 
-	imported := m.state.importSnapshot(history)
+	imported := m.state.importSnapshot(history, force)
 
 	log.Infof("Imported %v results to mission control", imported)
 
@@ -520,7 +522,7 @@ func (m *MissionControl) applyPaymentResult(
 		}
 
 		m.state.setLastPairResult(
-			pair.From, pair.To, result.timeReply, &pairResult,
+			pair.From, pair.To, result.timeReply, &pairResult, false,
 		)
 	}
 

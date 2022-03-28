@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
 	"github.com/lightningnetwork/lnd/chainreg"
 	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/routerrpc"
@@ -107,8 +107,7 @@ func testMultiHopPayments(net *lntest.NetworkHarness, t *harnessTest) {
 				Index: chanPoint.OutputIndex,
 			}
 
-			ctxt, _ := context.WithTimeout(ctxb, defaultTimeout)
-			err = node.WaitForNetworkChannelOpen(ctxt, chanPoint)
+			err = node.WaitForNetworkChannelOpen(chanPoint)
 			if err != nil {
 				t.Fatalf("%s(%d): timeout waiting for "+
 					"channel(%s) open: %v", nodeNames[i],
@@ -130,13 +129,11 @@ func testMultiHopPayments(net *lntest.NetworkHarness, t *harnessTest) {
 
 	// We'll wait for all parties to recognize the new channels within the
 	// network.
-	ctxt, _ := context.WithTimeout(ctxb, defaultTimeout)
-	err = dave.WaitForNetworkChannelOpen(ctxt, chanPointDave)
+	err = dave.WaitForNetworkChannelOpen(chanPointDave)
 	if err != nil {
 		t.Fatalf("dave didn't advertise his channel: %v", err)
 	}
-	ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
-	err = carol.WaitForNetworkChannelOpen(ctxt, chanPointCarol)
+	err = carol.WaitForNetworkChannelOpen(chanPointCarol)
 	if err != nil {
 		t.Fatalf("carol didn't advertise her channel in time: %v",
 			err)
@@ -372,6 +369,7 @@ func assertHtlcEvents(t *harnessTest, fwdCount, fwdFailCount, settleCount int,
 // type is different from the htlc event type (forward, link failure etc).
 func assertEventAndType(t *harnessTest, eventType routerrpc.HtlcEvent_EventType,
 	client routerrpc.Router_SubscribeHtlcEventsClient) *routerrpc.HtlcEvent {
+
 	event, err := client.Recv()
 	if err != nil {
 		t.Fatalf("could not get event")

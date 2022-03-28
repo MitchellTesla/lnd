@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
 	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/lightningnetwork/lnd/lntest"
 	"github.com/lightningnetwork/lnd/lntest/wait"
@@ -118,8 +118,7 @@ func testSwitchCircuitPersistence(net *lntest.NetworkHarness, t *harnessTest) {
 				Index: chanPoint.OutputIndex,
 			}
 
-			ctxt, _ := context.WithTimeout(ctxb, defaultTimeout)
-			err = node.WaitForNetworkChannelOpen(ctxt, chanPoint)
+			err = node.WaitForNetworkChannelOpen(chanPoint)
 			if err != nil {
 				t.Fatalf("%s(%d): timeout waiting for "+
 					"channel(%s) open: %v", nodeNames[i],
@@ -141,13 +140,11 @@ func testSwitchCircuitPersistence(net *lntest.NetworkHarness, t *harnessTest) {
 
 	// We'll wait for all parties to recognize the new channels within the
 	// network.
-	ctxt, _ := context.WithTimeout(ctxb, defaultTimeout)
-	err = dave.WaitForNetworkChannelOpen(ctxt, chanPointDave)
+	err = dave.WaitForNetworkChannelOpen(chanPointDave)
 	if err != nil {
 		t.Fatalf("dave didn't advertise his channel: %v", err)
 	}
-	ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
-	err = carol.WaitForNetworkChannelOpen(ctxt, chanPointCarol)
+	err = carol.WaitForNetworkChannelOpen(chanPointCarol)
 	if err != nil {
 		t.Fatalf("carol didn't advertise her channel in time: %v",
 			err)
@@ -214,7 +211,6 @@ func testSwitchCircuitPersistence(net *lntest.NetworkHarness, t *harnessTest) {
 	err = wait.Predicate(func() bool {
 		predErr = assertNumActiveHtlcs(nodes, 0)
 		return predErr == nil
-
 	}, defaultTimeout)
 	if err != nil {
 		t.Fatalf("htlc mismatch: %v", predErr)
@@ -251,7 +247,7 @@ func testSwitchCircuitPersistence(net *lntest.NetworkHarness, t *harnessTest) {
 		Memo:  "testing",
 		Value: paymentAmt,
 	}
-	ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
+	ctxt, _ := context.WithTimeout(ctxb, defaultTimeout)
 	resp, err := carol.AddInvoice(ctxt, finalInvoice)
 	if err != nil {
 		t.Fatalf("unable to add invoice: %v", err)
@@ -396,8 +392,7 @@ func testSwitchOfflineDelivery(net *lntest.NetworkHarness, t *harnessTest) {
 				Index: chanPoint.OutputIndex,
 			}
 
-			ctxt, _ := context.WithTimeout(ctxb, defaultTimeout)
-			err = node.WaitForNetworkChannelOpen(ctxt, chanPoint)
+			err = node.WaitForNetworkChannelOpen(chanPoint)
 			if err != nil {
 				t.Fatalf("%s(%d): timeout waiting for "+
 					"channel(%s) open: %v", nodeNames[i],
@@ -419,23 +414,19 @@ func testSwitchOfflineDelivery(net *lntest.NetworkHarness, t *harnessTest) {
 
 	// We'll wait for all parties to recognize the new channels within the
 	// network.
-	ctxt, _ := context.WithTimeout(ctxb, defaultTimeout)
-	err = dave.WaitForNetworkChannelOpen(ctxt, chanPointDave)
+	err = dave.WaitForNetworkChannelOpen(chanPointDave)
 	if err != nil {
 		t.Fatalf("dave didn't advertise his channel: %v", err)
 	}
-	ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
-	err = carol.WaitForNetworkChannelOpen(ctxt, chanPointCarol)
+	err = carol.WaitForNetworkChannelOpen(chanPointCarol)
 	if err != nil {
 		t.Fatalf("carol didn't advertise her channel in time: %v",
 			err)
 	}
 
 	// Make sure all nodes are fully synced before we continue.
-	ctxt, cancel := context.WithTimeout(ctxb, defaultTimeout)
-	defer cancel()
 	for _, node := range nodes {
-		err := node.WaitForBlockchainSync(ctxt)
+		err := node.WaitForBlockchainSync()
 		if err != nil {
 			t.Fatalf("unable to wait for sync: %v", err)
 		}
@@ -503,10 +494,8 @@ func testSwitchOfflineDelivery(net *lntest.NetworkHarness, t *harnessTest) {
 	}
 
 	// Make sure all nodes are fully synced again.
-	ctxt, cancel = context.WithTimeout(ctxb, defaultTimeout)
-	defer cancel()
 	for _, node := range nodes {
-		err := node.WaitForBlockchainSync(ctxt)
+		err := node.WaitForBlockchainSync()
 		if err != nil {
 			t.Fatalf("unable to wait for sync: %v", err)
 		}
@@ -555,7 +544,7 @@ func testSwitchOfflineDelivery(net *lntest.NetworkHarness, t *harnessTest) {
 		Memo:  "testing",
 		Value: paymentAmt,
 	}
-	ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
+	ctxt, _ := context.WithTimeout(ctxb, defaultTimeout)
 	resp, err := carol.AddInvoice(ctxt, finalInvoice)
 	if err != nil {
 		t.Fatalf("unable to add invoice: %v", err)
@@ -702,8 +691,7 @@ func testSwitchOfflineDeliveryPersistence(net *lntest.NetworkHarness, t *harness
 				Index: chanPoint.OutputIndex,
 			}
 
-			ctxt, _ := context.WithTimeout(ctxb, defaultTimeout)
-			err = node.WaitForNetworkChannelOpen(ctxt, chanPoint)
+			err = node.WaitForNetworkChannelOpen(chanPoint)
 			if err != nil {
 				t.Fatalf("%s(%d): timeout waiting for "+
 					"channel(%s) open: %v", nodeNames[i],
@@ -725,13 +713,11 @@ func testSwitchOfflineDeliveryPersistence(net *lntest.NetworkHarness, t *harness
 
 	// We'll wait for all parties to recognize the new channels within the
 	// network.
-	ctxt, _ := context.WithTimeout(ctxb, defaultTimeout)
-	err = dave.WaitForNetworkChannelOpen(ctxt, chanPointDave)
+	err = dave.WaitForNetworkChannelOpen(chanPointDave)
 	if err != nil {
 		t.Fatalf("dave didn't advertise his channel: %v", err)
 	}
-	ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
-	err = carol.WaitForNetworkChannelOpen(ctxt, chanPointCarol)
+	err = carol.WaitForNetworkChannelOpen(chanPointCarol)
 	if err != nil {
 		t.Fatalf("carol didn't advertise her channel in time: %v",
 			err)
@@ -750,7 +736,6 @@ func testSwitchOfflineDeliveryPersistence(net *lntest.NetworkHarness, t *harness
 	err = wait.Predicate(func() bool {
 		predErr = assertNumActiveHtlcs(nodes, numPayments)
 		return predErr == nil
-
 	}, defaultTimeout)
 	if err != nil {
 		t.Fatalf("htlc mismatch: %v", predErr)
@@ -842,7 +827,7 @@ func testSwitchOfflineDeliveryPersistence(net *lntest.NetworkHarness, t *harness
 		Memo:  "testing",
 		Value: paymentAmt,
 	}
-	ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
+	ctxt, _ := context.WithTimeout(ctxb, defaultTimeout)
 	resp, err := carol.AddInvoice(ctxt, finalInvoice)
 	if err != nil {
 		t.Fatalf("unable to add invoice: %v", err)
@@ -896,7 +881,6 @@ func testSwitchOfflineDeliveryPersistence(net *lntest.NetworkHarness, t *harness
 //   5. Carol <-- Dave <-- Alice  X       expect settle to propagate
 func testSwitchOfflineDeliveryOutgoingOffline(
 	net *lntest.NetworkHarness, t *harnessTest) {
-	ctxb := context.Background()
 
 	const chanAmt = btcutil.Amount(1000000)
 	const pushAmt = btcutil.Amount(900000)
@@ -991,8 +975,7 @@ func testSwitchOfflineDeliveryOutgoingOffline(
 				Index: chanPoint.OutputIndex,
 			}
 
-			ctxt, _ := context.WithTimeout(ctxb, defaultTimeout)
-			err = node.WaitForNetworkChannelOpen(ctxt, chanPoint)
+			err = node.WaitForNetworkChannelOpen(chanPoint)
 			if err != nil {
 				t.Fatalf("%s(%d): timeout waiting for "+
 					"channel(%s) open: %v", nodeNames[i],
@@ -1014,13 +997,11 @@ func testSwitchOfflineDeliveryOutgoingOffline(
 
 	// We'll wait for all parties to recognize the new channels within the
 	// network.
-	ctxt, _ := context.WithTimeout(ctxb, defaultTimeout)
-	err = dave.WaitForNetworkChannelOpen(ctxt, chanPointDave)
+	err = dave.WaitForNetworkChannelOpen(chanPointDave)
 	if err != nil {
 		t.Fatalf("dave didn't advertise his channel: %v", err)
 	}
-	ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
-	err = carol.WaitForNetworkChannelOpen(ctxt, chanPointCarol)
+	err = carol.WaitForNetworkChannelOpen(chanPointCarol)
 	if err != nil {
 		t.Fatalf("carol didn't advertise her channel in time: %v",
 			err)

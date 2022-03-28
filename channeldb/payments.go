@@ -315,7 +315,6 @@ func fetchPayment(bucket kvdb.RBucket) (*MPPayment, error) {
 	creationInfo, err := fetchCreationInfo(bucket)
 	if err != nil {
 		return nil, err
-
 	}
 
 	var htlcs []HTLCAttempt
@@ -358,7 +357,6 @@ func fetchPayment(bucket kvdb.RBucket) (*MPPayment, error) {
 	var paymentStatus PaymentStatus
 
 	switch {
-
 	// If any of the the HTLCs did succeed and there are no HTLCs in
 	// flight, the payment succeeded.
 	case !inflight && settled:
@@ -383,7 +381,7 @@ func fetchPayment(bucket kvdb.RBucket) (*MPPayment, error) {
 	}, nil
 }
 
-// fetchHtlcAttempts retrives all htlc attempts made for the payment found in
+// fetchHtlcAttempts retrieves all htlc attempts made for the payment found in
 // the given bucket.
 func fetchHtlcAttempts(bucket kvdb.RBucket) ([]HTLCAttempt, error) {
 	htlcsMap := make(map[uint64]*HTLCAttempt)
@@ -732,7 +730,9 @@ func fetchPaymentWithSequenceNumber(tx kvdb.RTx, paymentHash lntypes.Hash,
 // DeletePayment deletes a payment from the DB given its payment hash. If
 // failedHtlcsOnly is set, only failed HTLC attempts of the payment will be
 // deleted.
-func (d *DB) DeletePayment(paymentHash lntypes.Hash, failedHtlcsOnly bool) error { // nolint:interfacer
+func (d *DB) DeletePayment(paymentHash lntypes.Hash,
+	failedHtlcsOnly bool) error {
+
 	return kvdb.Update(d, func(tx kvdb.RwTx) error {
 		payments := tx.ReadWriteBucket(paymentsRootBucket)
 		if payments == nil {
@@ -1092,7 +1092,6 @@ func deserializeHTLCAttemptInfo(r io.Reader) (*HTLCAttemptInfo, error) {
 	_, err = io.ReadFull(r, hash[:])
 
 	switch {
-
 	// Older payment attempts wouldn't have the hash set, in which case we
 	// can just return.
 	case err == io.EOF, err == io.ErrUnexpectedEOF:

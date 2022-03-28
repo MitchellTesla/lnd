@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/btcsuite/btcutil"
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/invoicesrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/routerrpc"
@@ -48,19 +48,37 @@ func testHoldInvoicePersistence(net *lntest.NetworkHarness, t *harnessTest) {
 
 	// Wait for Alice and Carol to receive the channel edge from the
 	// funding manager.
-	ctxt, _ := context.WithTimeout(ctxb, defaultTimeout)
-	err := net.Alice.WaitForNetworkChannelOpen(ctxt, chanPointAlice)
+	err := net.Alice.WaitForNetworkChannelOpen(chanPointAlice)
 	if err != nil {
 		t.Fatalf("alice didn't see the alice->carol channel before "+
 			"timeout: %v", err)
 	}
 
-	ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
-	err = carol.WaitForNetworkChannelOpen(ctxt, chanPointAlice)
+	err = carol.WaitForNetworkChannelOpen(chanPointAlice)
 	if err != nil {
 		t.Fatalf("carol didn't see the carol->alice channel before "+
 			"timeout: %v", err)
 	}
+
+	// For Carol to include her private channel with Alice as a hop hint,
+	// we need Alice to be perceived as a "public" node, meaning that she
+	// has at least one public channel in the graph. We open a public
+	// channel from Alice -> Bob and wait for Carol to see it.
+	chanPointBob := openChannelAndAssert(
+		t, net, net.Alice, net.Bob,
+		lntest.OpenChannelParams{
+			Amt: chanAmt,
+		},
+	)
+
+	// Wait for Alice and Carol to see the open channel
+	err = net.Alice.WaitForNetworkChannelOpen(chanPointBob)
+	require.NoError(t.t, err, "alice didn't see the alice->bob "+
+		"channel before timeout")
+
+	err = carol.WaitForNetworkChannelOpen(chanPointBob)
+	require.NoError(t.t, err, "carol didn't see the alice->bob "+
+		"channel before timeout")
 
 	// Create preimages for all payments we are going to initiate.
 	var preimages []lntypes.Preimage
@@ -92,7 +110,7 @@ func testHoldInvoicePersistence(net *lntest.NetworkHarness, t *harnessTest) {
 			Hash:    payHash[:],
 			Private: true,
 		}
-		ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
+		ctxt, _ := context.WithTimeout(ctxb, defaultTimeout)
 		resp, err := carol.AddHoldInvoice(ctxt, invoiceReq)
 		if err != nil {
 			t.Fatalf("unable to add invoice: %v", err)
@@ -110,6 +128,18 @@ func testHoldInvoicePersistence(net *lntest.NetworkHarness, t *harnessTest) {
 		if err != nil {
 			t.Fatalf("unable to subscribe to invoice: %v", err)
 		}
+
+		// We expect all of our invoices to have hop hints attached,
+		// since Carol and Alice are connected with a private channel.
+		// We assert that we have one hop hint present to ensure that
+		// we've got coverage for hop hints.
+		ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
+		decodeReq := &lnrpc.PayReqString{
+			PayReq: resp.PaymentRequest,
+		}
+		invoice, err := net.Alice.DecodePayReq(ctxt, decodeReq)
+		require.NoError(t.t, err, "could not decode invoice")
+		require.Len(t.t, invoice.RouteHints, 1)
 
 		invoiceStreams = append(invoiceStreams, stream)
 		payReqs = append(payReqs, resp.PaymentRequest)
@@ -165,7 +195,7 @@ func testHoldInvoicePersistence(net *lntest.NetworkHarness, t *harnessTest) {
 		req := &lnrpc.ListPaymentsRequest{
 			IncludeIncomplete: true,
 		}
-		ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
+		ctxt, _ := context.WithTimeout(ctxb, defaultTimeout)
 		paymentsResp, err := net.Alice.ListPayments(ctxt, req)
 		if err != nil {
 			return fmt.Errorf("error when obtaining payments: %v",
@@ -231,7 +261,7 @@ func testHoldInvoicePersistence(net *lntest.NetworkHarness, t *harnessTest) {
 	}
 
 	// Now after a restart, we must re-track the payments. We set up a
-	// goroutine for each to track thir status updates.
+	// goroutine for each to track their status updates.
 	var (
 		statusUpdates []chan *lnrpc.Payment
 		wg            sync.WaitGroup
@@ -291,7 +321,7 @@ func testHoldInvoicePersistence(net *lntest.NetworkHarness, t *harnessTest) {
 					payment.Status)
 			}
 		case <-time.After(5 * time.Second):
-			t.Fatalf("in flight status not recevied")
+			t.Fatalf("in flight status not received")
 		}
 	}
 
@@ -299,7 +329,7 @@ func testHoldInvoicePersistence(net *lntest.NetworkHarness, t *harnessTest) {
 	for i, preimage := range preimages {
 		var expectedState lnrpc.Invoice_InvoiceState
 
-		ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
+		ctxt, _ := context.WithTimeout(ctxb, defaultTimeout)
 		if i%2 == 0 {
 			settle := &invoicesrpc.SettleInvoiceMsg{
 				Preimage: preimage[:],
@@ -343,7 +373,7 @@ func testHoldInvoicePersistence(net *lntest.NetworkHarness, t *harnessTest) {
 
 				payment = p
 			case <-time.After(5 * time.Second):
-				t.Fatalf("in flight status not recevied")
+				t.Fatalf("in flight status not received")
 			}
 		}
 
@@ -368,7 +398,7 @@ func testHoldInvoicePersistence(net *lntest.NetworkHarness, t *harnessTest) {
 	req := &lnrpc.ListPaymentsRequest{
 		IncludeIncomplete: true,
 	}
-	ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
+	ctxt, _ := context.WithTimeout(ctxb, defaultTimeout)
 	paymentsResp, err := net.Alice.ListPayments(ctxt, req)
 	if err != nil {
 		t.Fatalf("error when obtaining Alice payments: %v", err)

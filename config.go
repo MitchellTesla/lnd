@@ -1,6 +1,6 @@
 // Copyright (c) 2013-2017 The btcsuite developers
 // Copyright (c) 2015-2016 The Decred developers
-// Copyright (C) 2015-2020 The Lightning Network Developers
+// Copyright (C) 2015-2022 The Lightning Network Developers
 
 package lnd
 
@@ -19,8 +19,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/btcsuite/btcutil"
 	flags "github.com/jessevdk/go-flags"
 	"github.com/lightninglabs/neutrino"
 	"github.com/lightningnetwork/lnd/autopilot"
@@ -148,6 +148,16 @@ const (
 	defaultTCBackoff  = time.Minute
 	defaultTCAttempts = 0
 
+	// Set defaults for a health check which ensures that the remote signer
+	// RPC connection is alive. Although this check is off by default (only
+	// active when remote signing is turned on), we still set the other
+	// default values so that the health check can be easily enabled with
+	// sane defaults.
+	defaultRSInterval = time.Minute
+	defaultRSTimeout  = time.Second * 1
+	defaultRSBackoff  = time.Second * 30
+	defaultRSAttempts = 1
+
 	// defaultRemoteMaxHtlcs specifies the default limit for maximum
 	// concurrent HTLCs the remote party may add to commitment transactions.
 	// This value can be overridden with --default-remote-max-htlcs.
@@ -158,9 +168,23 @@ const (
 	// TODO(halseth): find a more scientific choice of value.
 	defaultMaxLocalCSVDelay = 10000
 
-	// defaultChannelCommitInterval is the default maximum time between receiving a
-	// channel state update and signing a new commitment.
+	// defaultChannelCommitInterval is the default maximum time between
+	// receiving a channel state update and signing a new commitment.
 	defaultChannelCommitInterval = 50 * time.Millisecond
+
+	// maxChannelCommitInterval is the maximum time the commit interval can
+	// be configured to.
+	maxChannelCommitInterval = time.Hour
+
+	// defaultPendingCommitInterval specifies the default timeout value
+	// while waiting for the remote party to revoke a locally initiated
+	// commitment state.
+	defaultPendingCommitInterval = 1 * time.Minute
+
+	// maxPendingCommitInterval specifies the max allowed duration when
+	// waiting for the remote party to revoke a locally initiated
+	// commitment state.
+	maxPendingCommitInterval = 5 * time.Minute
 
 	// defaultChannelCommitBatchSize is the default maximum number of
 	// channel state updates that is accumulated before signing a new
@@ -246,7 +270,7 @@ type Config struct {
 
 	LetsEncryptDir    string `long:"letsencryptdir" description:"The directory to store Let's Encrypt certificates within"`
 	LetsEncryptListen string `long:"letsencryptlisten" description:"The IP:port on which lnd will listen for Let's Encrypt challenges. Let's Encrypt will always try to contact on port 80. Often non-root processes are not allowed to bind to ports lower than 1024. This configuration option allows a different port to be used, but must be used in combination with port forwarding from port 80. This configuration can also be used to specify another IP address to listen on, for example an IPv6 address."`
-	LetsEncryptDomain string `long:"letsencryptdomain" description:"Request a Let's Encrypt certificate for this domain. Note that the certicate is only requested and stored when the first rpc connection comes in."`
+	LetsEncryptDomain string `long:"letsencryptdomain" description:"Request a Let's Encrypt certificate for this domain. Note that the certificate is only requested and stored when the first rpc connection comes in."`
 
 	// We'll parse these 'raw' string arguments into real net.Addrs in the
 	// loadConfig function. We need to expose the 'raw' strings so the
@@ -256,7 +280,7 @@ type Config struct {
 	RawRESTListeners  []string `long:"restlisten" description:"Add an interface/port/socket to listen for REST connections"`
 	RawListeners      []string `long:"listen" description:"Add an interface/port to listen for peer connections"`
 	RawExternalIPs    []string `long:"externalip" description:"Add an ip:port to the list of local addresses we claim to listen on to peers. If a port is not specified, the default (9735) will be used regardless of other parameters"`
-	ExternalHosts     []string `long:"externalhosts" description:"A set of hosts that should be periodically resolved to announce IPs for"`
+	ExternalHosts     []string `long:"externalhosts" description:"Add a hostname:port that should be periodically resolved to announce IPs for. If a port is not specified, the default (9735) will be used."`
 	RPCListeners      []net.Addr
 	RESTListeners     []net.Addr
 	RestCORS          []string `long:"restcors" description:"Add an ip:port/hostname to allow cross origin access from. To allow all origins, set as \"*\"."`
@@ -316,7 +340,7 @@ type Config struct {
 
 	PaymentsExpirationGracePeriod time.Duration `long:"payments-expiration-grace-period" description:"A period to wait before force closing channels with outgoing htlcs that have timed-out and are a result of this node initiated payments."`
 	TrickleDelay                  int           `long:"trickledelay" description:"Time in milliseconds between each release of announcements to the network"`
-	ChanEnableTimeout             time.Duration `long:"chan-enable-timeout" description:"The duration that a peer connection must be stable before attempting to send a channel update to reenable or cancel a pending disables of the peer's channels on the network."`
+	ChanEnableTimeout             time.Duration `long:"chan-enable-timeout" description:"The duration that a peer connection must be stable before attempting to send a channel update to re-enable or cancel a pending disables of the peer's channels on the network."`
 	ChanDisableTimeout            time.Duration `long:"chan-disable-timeout" description:"The duration that must elapse after first detecting that an already active channel is actually inactive and sending channel update disabling it to the network. The pending disable can be canceled if the peer reconnects and becomes stable for chan-enable-timeout before the disable update is sent."`
 	ChanStatusSampleInterval      time.Duration `long:"chan-status-sample-interval" description:"The polling interval between attempts to detect if an active channel has become inactive due to its peer going offline."`
 	HeightHintCacheQueryDisable   bool          `long:"height-hint-cache-query-disable" description:"Disable queries from the height-hint cache to try to recover channels stuck in the pending close state. Disabling height hint queries may cause longer chain rescans, resulting in a performance hit. Unset this after channels are unstuck so you can get better performance again."`
@@ -326,8 +350,11 @@ type Config struct {
 	MaxChanSize                   int64         `long:"maxchansize" description:"The largest channel size (in satoshis) that we should accept. Incoming channels larger than this will be rejected"`
 	CoopCloseTargetConfs          uint32        `long:"coop-close-target-confs" description:"The target number of blocks that a cooperative channel close transaction should confirm in. This is used to estimate the fee to use as the lower bound during fee negotiation for the channel closure."`
 
-	ChannelCommitInterval  time.Duration `long:"channel-commit-interval" description:"The maximum time that is allowed to pass between receiving a channel state update and signing the next commitment. Setting this to a longer duration allows for more efficient channel operations at the cost of latency."`
-	ChannelCommitBatchSize uint32        `long:"channel-commit-batch-size" description:"The maximum number of channel state updates that is accumulated before signing a new commitment."`
+	ChannelCommitInterval time.Duration `long:"channel-commit-interval" description:"The maximum time that is allowed to pass between receiving a channel state update and signing the next commitment. Setting this to a longer duration allows for more efficient channel operations at the cost of latency."`
+
+	PendingCommitInterval time.Duration `long:"pending-commit-interval" description:"The maximum time that is allowed to pass while waiting for the remote party to revoke a locally initiated commitment state. Setting this to a longer duration if a slow response is expected from the remote party or large number of payments are attempted at the same time."`
+
+	ChannelCommitBatchSize uint32 `long:"channel-commit-batch-size" description:"The maximum number of channel state updates that is accumulated before signing a new commitment."`
 
 	DefaultRemoteMaxHtlcs uint16 `long:"default-remote-max-htlcs" description:"The default max_htlc applied when opening or accepting channels. This value limits the number of concurrent HTLCs that the remote party can add to the commitment. The maximum possible value is 483."`
 
@@ -339,6 +366,10 @@ type Config struct {
 	RejectPush bool `long:"rejectpush" description:"If true, lnd will not accept channel opening requests with non-zero push amounts. This should prevent accidental pushes to merchant nodes."`
 
 	RejectHTLC bool `long:"rejecthtlc" description:"If true, lnd will not forward any HTLCs that are meant as onward payments. This option will still allow lnd to send HTLCs and receive HTLCs but lnd won't be used as a hop."`
+
+	// RequireInterceptor determines whether the HTLC interceptor is
+	// registered regardless of whether the RPC is called or not.
+	RequireInterceptor bool `long:"requireinterceptor" description:"Whether to always intercept HTLCs, even if no stream is attached"`
 
 	StaggerInitialReconnect bool `long:"stagger-initial-reconnect" description:"If true, will apply a randomized staggering between 0s and 30s when reconnecting to persistent peers on startup. The first 10 reconnections will be attempted instantly, regardless of the flag's value"`
 
@@ -558,6 +589,12 @@ func DefaultConfig() Config {
 				Attempts: defaultTCAttempts,
 				Backoff:  defaultTCBackoff,
 			},
+			RemoteSigner: &lncfg.CheckConfig{
+				Interval: defaultRSInterval,
+				Timeout:  defaultRSTimeout,
+				Attempts: defaultRSAttempts,
+				Backoff:  defaultRSBackoff,
+			},
 		},
 		Gossip: &lncfg.Gossip{
 			MaxChannelUpdateBurst: discovery.DefaultMaxChannelUpdateBurst,
@@ -577,9 +614,12 @@ func DefaultConfig() Config {
 		registeredChains:        chainreg.NewChainRegistry(),
 		ActiveNetParams:         chainreg.BitcoinTestNetParams,
 		ChannelCommitInterval:   defaultChannelCommitInterval,
+		PendingCommitInterval:   defaultPendingCommitInterval,
 		ChannelCommitBatchSize:  defaultChannelCommitBatchSize,
 		CoinSelectionStrategy:   defaultCoinSelectionStrategy,
-		RemoteSigner:            &lncfg.RemoteSigner{},
+		RemoteSigner: &lncfg.RemoteSigner{
+			Timeout: lncfg.DefaultRemoteSignerRPCTimeout,
+		},
 	}
 }
 
@@ -615,11 +655,22 @@ func LoadConfig(interceptor signal.Interceptor) (*Config, error) {
 	// file within it.
 	configFileDir := CleanAndExpandPath(preCfg.LndDir)
 	configFilePath := CleanAndExpandPath(preCfg.ConfigFile)
-	if configFileDir != DefaultLndDir {
-		if configFilePath == DefaultConfigFile {
-			configFilePath = filepath.Join(
-				configFileDir, lncfg.DefaultConfigFilename,
-			)
+	switch {
+	// User specified --lnddir but no --configfile. Update the config file
+	// path to the lnd config directory, but don't require it to exist.
+	case configFileDir != DefaultLndDir &&
+		configFilePath == DefaultConfigFile:
+
+		configFilePath = filepath.Join(
+			configFileDir, lncfg.DefaultConfigFilename,
+		)
+
+	// User did specify an explicit --configfile, so we check that it does
+	// exist under that path to avoid surprises.
+	case configFilePath != DefaultConfigFile:
+		if !fileExists(configFilePath) {
+			return nil, fmt.Errorf("specified config file does "+
+				"not exist in %s", configFilePath)
 		}
 	}
 
@@ -871,7 +922,7 @@ func ValidateConfig(cfg Config, interceptor signal.Interceptor, fileParser,
 		)
 	}
 
-	// Don't allow superflous --maxchansize greater than
+	// Don't allow superfluous --maxchansize greater than
 	// BOLT 02 soft-limit for non-wumbo channel
 	if !cfg.ProtocolOptions.Wumbo() &&
 		cfg.MaxChanSize > int64(MaxFundingAmount) {
@@ -1212,6 +1263,10 @@ func ValidateConfig(cfg Config, interceptor signal.Interceptor, fileParser,
 		case "neutrino":
 			// No need to get RPC parameters.
 
+		case "nochainbackend":
+			// Nothing to configure, we're running without any chain
+			// backend whatsoever (pure signing mode).
+
 		default:
 			str := "only btcd, bitcoind, and neutrino mode " +
 				"supported for bitcoin at this time"
@@ -1529,6 +1584,22 @@ func ValidateConfig(cfg Config, interceptor signal.Interceptor, fileParser,
 			maxRemoteHtlcs)
 	}
 
+	// Clamp the ChannelCommitInterval so that commitment updates can still
+	// happen in a reasonable timeframe.
+	if cfg.ChannelCommitInterval > maxChannelCommitInterval {
+		return nil, mkErr("channel-commit-interval (%v) must be less "+
+			"than %v", cfg.ChannelCommitInterval,
+			maxChannelCommitInterval)
+	}
+
+	// Limit PendingCommitInterval so we don't wait too long for the remote
+	// party to send back a revoke.
+	if cfg.PendingCommitInterval > maxPendingCommitInterval {
+		return nil, mkErr("pending-commit-interval (%v) must be less "+
+			"than %v", cfg.PendingCommitInterval,
+			maxPendingCommitInterval)
+	}
+
 	if err := cfg.Gossip.Parse(); err != nil {
 		return nil, mkErr("error parsing gossip syncer: %v", err)
 	}
@@ -1554,6 +1625,7 @@ func ValidateConfig(cfg Config, interceptor signal.Interceptor, fileParser,
 		cfg.Cluster,
 		cfg.HealthChecks,
 		cfg.RPCMiddleware,
+		cfg.RemoteSigner,
 	)
 	if err != nil {
 		return nil, err
@@ -1562,7 +1634,7 @@ func ValidateConfig(cfg Config, interceptor signal.Interceptor, fileParser,
 	// Finally, ensure that the user's color is correctly formatted,
 	// otherwise the server will not be able to start after the unlocking
 	// the wallet.
-	_, err = parseHexColor(cfg.Color)
+	_, err = lncfg.ParseHexColor(cfg.Color)
 	if err != nil {
 		return nil, mkErr("unable to parse node color: %v", err)
 	}
@@ -1589,7 +1661,10 @@ func (c *Config) ImplementationConfig(
 	// watch-only source of chain and address data. But we don't need any
 	// private key material in that btcwallet base wallet.
 	if c.RemoteSigner.Enable {
-		rpcImpl := NewRPCSignerWalletImpl(c, ltndLog, interceptor)
+		rpcImpl := NewRPCSignerWalletImpl(
+			c, ltndLog, interceptor,
+			c.RemoteSigner.MigrateWatchOnly,
+		)
 		return &ImplementationCfg{
 			GrpcRegistrar:     rpcImpl,
 			RestRegistrar:     rpcImpl,
@@ -1871,7 +1946,7 @@ func extractBitcoindRPCParams(networkName string,
 		dataDir = string(dataDirSubmatches[1])
 	}
 
-	chainDir := ""
+	var chainDir string
 	switch networkName {
 	case "mainnet":
 		chainDir = ""

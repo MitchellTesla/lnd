@@ -3,12 +3,12 @@ package channeldb
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"image/color"
 	"io/ioutil"
 	"math"
-	"math/big"
 	prand "math/rand"
 	"net"
 	"os"
@@ -18,10 +18,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/btcsuite/btcd/btcec"
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/ecdsa"
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
 	"github.com/davecgh/go-spew/spew"
 	"github.com/lightningnetwork/lnd/kvdb"
 	"github.com/lightningnetwork/lnd/lnwire"
@@ -36,12 +37,13 @@ var (
 		"[2001:db8:85a3:0:0:8a2e:370:7334]:80")
 	testAddrs = []net.Addr{testAddr, anotherAddr}
 
-	testSig = &btcec.Signature{
-		R: new(big.Int),
-		S: new(big.Int),
-	}
-	_, _ = testSig.R.SetString("63724406601629180062774974542967536251589935445068131219452686511677818569431", 10)
-	_, _ = testSig.S.SetString("18801056069249825825291287104931333862866033135609736119018462340006816851118", 10)
+	testRBytes, _ = hex.DecodeString("8ce2bc69281ce27da07e6683571319d18e949ddfa2965fb6caa1bf0314f882d7")
+	testSBytes, _ = hex.DecodeString("299105481d63e0f4bc2a88121167221b6700d72a0ead154c03be696a292d24ae")
+	testRScalar   = new(btcec.ModNScalar)
+	testSScalar   = new(btcec.ModNScalar)
+	_             = testRScalar.SetByteSlice(testRBytes)
+	_             = testSScalar.SetByteSlice(testSBytes)
+	testSig       = ecdsa.NewSignature(testRScalar, testSScalar)
 
 	testFeatures = lnwire.NewFeatureVector(
 		lnwire.NewRawFeatureVector(lnwire.GossipQueriesRequired),
@@ -77,7 +79,7 @@ func MakeTestGraph(modifiers ...OptionModifier) (*ChannelGraph, func(), error) {
 	graph, err := NewChannelGraph(
 		backend, opts.RejectCacheSize, opts.ChannelCacheSize,
 		opts.BatchCommitInterval, opts.PreAllocCacheNumNodes,
-		true,
+		true, false,
 	)
 	if err != nil {
 		backendCleanup()
@@ -114,7 +116,7 @@ func createLightningNode(db kvdb.Backend, priv *btcec.PrivateKey) (*LightningNod
 }
 
 func createTestVertex(db kvdb.Backend) (*LightningNode, error) {
-	priv, err := btcec.NewPrivateKey(btcec.S256())
+	priv, err := btcec.NewPrivateKey()
 	if err != nil {
 		return nil, err
 	}
@@ -1207,11 +1209,22 @@ func TestGraphTraversalCacheable(t *testing.T) {
 	// Iterate through all the known channels within the graph DB by
 	// iterating over each node, once again if the map is empty that
 	// indicates that all edges have properly been reached.
+	var nodes []GraphCacheNode
 	err = graph.ForEachNodeCacheable(
 		func(tx kvdb.RTx, node GraphCacheNode) error {
 			delete(nodeMap, node.PubKey())
 
-			return node.ForEachChannel(
+			nodes = append(nodes, node)
+
+			return nil
+		},
+	)
+	require.NoError(t, err)
+	require.Len(t, nodeMap, 0)
+
+	err = graph.db.View(func(tx kvdb.RTx) error {
+		for _, node := range nodes {
+			err := node.ForEachChannel(
 				tx, func(tx kvdb.RTx, info *ChannelEdgeInfo,
 					policy *ChannelEdgePolicy,
 					policy2 *ChannelEdgePolicy) error {
@@ -1220,10 +1233,15 @@ func TestGraphTraversalCacheable(t *testing.T) {
 					return nil
 				},
 			)
-		},
-	)
+			if err != nil {
+				return err
+			}
+		}
+
+		return nil
+	}, func() {})
+
 	require.NoError(t, err)
-	require.Len(t, nodeMap, 0)
 	require.Len(t, chanIndex, 0)
 }
 
@@ -1263,6 +1281,7 @@ func TestGraphCacheTraversal(t *testing.T) {
 				if !bytes.Equal(
 					inPolicyNodeKey[:], node.PubKeyBytes[:],
 				) {
+
 					return fmt.Errorf("wrong outgoing edge")
 				}
 
@@ -3474,15 +3493,12 @@ func TestLightningNodeSigVerification(t *testing.T) {
 	}
 
 	// Create private key and sign the data with it.
-	priv, err := btcec.NewPrivateKey(btcec.S256())
+	priv, err := btcec.NewPrivateKey()
 	if err != nil {
 		t.Fatalf("unable to crete priv key: %v", err)
 	}
 
-	sign, err := priv.Sign(data[:])
-	if err != nil {
-		t.Fatalf("unable to sign: %v", err)
-	}
+	sign := ecdsa.Sign(priv, data[:])
 
 	// Sanity check that the signature checks out.
 	if !sign.Verify(data[:], priv.PubKey()) {
@@ -3695,9 +3711,20 @@ func BenchmarkForEachChannel(b *testing.B) {
 			totalCapacity btcutil.Amount
 			maxHTLCs      lnwire.MilliSatoshi
 		)
-		err := graph.ForEachNodeCacheable(
-			func(tx kvdb.RTx, n GraphCacheNode) error {
-				return n.ForEachChannel(
+
+		var nodes []GraphCacheNode
+		err = graph.ForEachNodeCacheable(
+			func(tx kvdb.RTx, node GraphCacheNode) error {
+				nodes = append(nodes, node)
+
+				return nil
+			},
+		)
+		require.NoError(b, err)
+
+		err = graph.db.View(func(tx kvdb.RTx) error {
+			for _, n := range nodes {
+				err := n.ForEachChannel(
 					tx, func(tx kvdb.RTx,
 						info *ChannelEdgeInfo,
 						policy *ChannelEdgePolicy,
@@ -3715,8 +3742,13 @@ func BenchmarkForEachChannel(b *testing.B) {
 						return nil
 					},
 				)
-			},
-		)
+				if err != nil {
+					return err
+				}
+			}
+
+			return nil
+		}, func() {})
 		require.NoError(b, err)
 	}
 }
@@ -3752,11 +3784,59 @@ func TestGraphCacheForEachNodeChannel(t *testing.T) {
 	var numChans int
 	err = graph.ForEachNodeChannel(nil, node1.PubKeyBytes,
 		func(channel *DirectedChannel) error {
-
 			numChans++
 			return nil
 		})
 	require.NoError(t, err)
 
 	require.Equal(t, numChans, 1)
+}
+
+// TestGraphLoading asserts that the cache is properly reconstructed after a
+// restart.
+func TestGraphLoading(t *testing.T) {
+	// First, create a temporary directory to be used for the duration of
+	// this test.
+	tempDirName, err := ioutil.TempDir("", "channelgraph")
+	require.NoError(t, err)
+	defer os.RemoveAll(tempDirName)
+
+	// Next, create the graph for the first time.
+	backend, backendCleanup, err := kvdb.GetTestBackend(tempDirName, "cgr")
+	require.NoError(t, err)
+	defer backend.Close()
+	defer backendCleanup()
+
+	opts := DefaultOptions()
+	graph, err := NewChannelGraph(
+		backend, opts.RejectCacheSize, opts.ChannelCacheSize,
+		opts.BatchCommitInterval, opts.PreAllocCacheNumNodes,
+		true, false,
+	)
+	require.NoError(t, err)
+
+	// Populate the graph with test data.
+	const numNodes = 100
+	const numChannels = 4
+	_, _ = fillTestGraph(t, graph, numNodes, numChannels)
+
+	// Recreate the graph. This should cause the graph cache to be
+	// populated.
+	graphReloaded, err := NewChannelGraph(
+		backend, opts.RejectCacheSize, opts.ChannelCacheSize,
+		opts.BatchCommitInterval, opts.PreAllocCacheNumNodes,
+		true, false,
+	)
+	require.NoError(t, err)
+
+	// Assert that the cache content is identical.
+	require.Equal(
+		t, graph.graphCache.nodeChannels,
+		graphReloaded.graphCache.nodeChannels,
+	)
+
+	require.Equal(
+		t, graph.graphCache.nodeFeatures,
+		graphReloaded.graphCache.nodeFeatures,
+	)
 }

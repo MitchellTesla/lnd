@@ -10,14 +10,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/btcsuite/btcd/btcec"
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/ecdsa"
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
 	"github.com/davecgh/go-spew/spew"
-	"github.com/stretchr/testify/mock"
-	"github.com/stretchr/testify/require"
-
 	"github.com/lightningnetwork/lnd/chainntnfs"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/clock"
@@ -29,6 +27,8 @@ import (
 	"github.com/lightningnetwork/lnd/record"
 	"github.com/lightningnetwork/lnd/routing/route"
 	"github.com/lightningnetwork/lnd/zpay32"
+	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 )
 
 var uniquePaymentID uint64 = 1 // to be used atomically
@@ -233,8 +233,7 @@ func signErrChanUpdate(t *testing.T, key *btcec.PrivateKey,
 	require.NoError(t, err, "failed to retrieve data to sign")
 
 	digest := chainhash.DoubleHashB(chanUpdateMsg)
-	sig, err := key.Sign(digest)
-	require.NoError(t, err, "failed to sign msg")
+	sig := ecdsa.Sign(key, digest)
 
 	errChanUpdate.Signature, err = lnwire.NewSigFromSignature(sig)
 	require.NoError(t, err, "failed to create new signature")
@@ -630,7 +629,7 @@ func TestSendPaymentErrorFeeInsufficientPrivateEdge(t *testing.T) {
 		sgNode           = ctx.aliases["songoku"]
 	)
 
-	sgNodeID, err := btcec.ParsePubKey(sgNode[:], btcec.S256())
+	sgNodeID, err := btcec.ParsePubKey(sgNode[:])
 	require.NoError(t, err)
 
 	// Craft a LightningPayment struct that'll send a payment from roasbeef
@@ -671,7 +670,6 @@ func TestSendPaymentErrorFeeInsufficientPrivateEdge(t *testing.T) {
 	copy(preImage[:], bytes.Repeat([]byte{9}, 32))
 	ctx.router.cfg.Payer.(*mockPaymentAttemptDispatcherOld).setPaymentResult(
 		func(firstHop lnwire.ShortChannelID) ([32]byte, error) {
-
 			if firstHop != roasbeefSongoku || errorReturned {
 				return preImage, nil
 			}
@@ -686,7 +684,8 @@ func TestSendPaymentErrorFeeInsufficientPrivateEdge(t *testing.T) {
 					Update: errChanUpdate,
 				}, 1,
 			)
-		})
+		},
+	)
 
 	// Send off the payment request to the router, route through son
 	// goku and then across the private channel to elst.
@@ -764,7 +763,7 @@ func TestSendPaymentPrivateEdgeUpdateFeeExceedsLimit(t *testing.T) {
 		feeLimit         = lnwire.MilliSatoshi(500000)
 	)
 
-	sgNodeID, err := btcec.ParsePubKey(sgNode[:], btcec.S256())
+	sgNodeID, err := btcec.ParsePubKey(sgNode[:])
 	require.NoError(t, err)
 
 	// Craft a LightningPayment struct that'll send a payment from roasbeef
@@ -803,7 +802,6 @@ func TestSendPaymentPrivateEdgeUpdateFeeExceedsLimit(t *testing.T) {
 	copy(preImage[:], bytes.Repeat([]byte{9}, 32))
 	ctx.router.cfg.Payer.(*mockPaymentAttemptDispatcherOld).setPaymentResult(
 		func(firstHop lnwire.ShortChannelID) ([32]byte, error) {
-
 			if firstHop != roasbeefSongoku || errorReturned {
 				return preImage, nil
 			}
@@ -818,7 +816,8 @@ func TestSendPaymentPrivateEdgeUpdateFeeExceedsLimit(t *testing.T) {
 					Update: errChanUpdate,
 				}, 1,
 			)
-		})
+		},
+	)
 
 	// Send off the payment request to the router, route through son
 	// goku and then across the private channel to elst.
@@ -858,7 +857,7 @@ func TestSendPaymentPrivateEdgeUpdateFeeExceedsLimit(t *testing.T) {
 
 // TestSendPaymentErrorNonFinalTimeLockErrors tests that if we receive either
 // an ExpiryTooSoon or a IncorrectCltvExpiry error from a node, then we prune
-// that node from the available graph witin a mission control session. This
+// that node from the available graph within a mission control session. This
 // test ensures that we'll route around errors due to nodes not knowing the
 // current block height.
 func TestSendPaymentErrorNonFinalTimeLockErrors(t *testing.T) {
@@ -1440,7 +1439,7 @@ func TestAddEdgeUnknownVertexes(t *testing.T) {
 
 	// We will connect node 1 to "sophon"
 	connectNode := ctx.aliases["sophon"]
-	connectNodeKey, err := btcec.ParsePubKey(connectNode[:], btcec.S256())
+	connectNodeKey, err := btcec.ParsePubKey(connectNode[:])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2719,7 +2718,7 @@ func TestIsStaleEdgePolicy(t *testing.T) {
 func TestEmptyRoutesGenerateSphinxPacket(t *testing.T) {
 	t.Parallel()
 
-	sessionKey, _ := btcec.NewPrivateKey(btcec.S256())
+	sessionKey, _ := btcec.NewPrivateKey()
 	emptyRoute := &route.Route{}
 	_, _, err := generateSphinxPacket(emptyRoute, testHash[:], sessionKey)
 	if err != route.ErrNoRouteHopsProvided {
@@ -3072,7 +3071,6 @@ func TestSendToRouteMultiShardSend(t *testing.T) {
 
 	ctx.router.cfg.Payer.(*mockPaymentAttemptDispatcherOld).setPaymentResult(
 		func(firstHop lnwire.ShortChannelID) ([32]byte, error) {
-
 			// Signal that the shard has been initiated and is
 			// waiting for a result.
 			waitForResultSignal <- struct{}{}
@@ -3083,7 +3081,8 @@ func TestSendToRouteMultiShardSend(t *testing.T) {
 				return [32]byte{}, fmt.Errorf("failure")
 			}
 			return res, nil
-		})
+		},
+	)
 
 	// Launch three shards by calling SendToRoute in three goroutines,
 	// returning their final error on the channel.
@@ -3823,7 +3822,6 @@ func TestSendMPPaymentSucceedOnExtraShards(t *testing.T) {
 			payment.HTLCs[i] = attempt
 			return
 		}
-
 	})
 
 	// Setup ReportPaymentFail to return nil reason and error so the
@@ -4007,7 +4005,6 @@ func TestSendMPPaymentFailed(t *testing.T) {
 				),
 			}
 			return
-
 		}
 
 		// We will make the rest attempts failed with temporary error.
@@ -4036,7 +4033,6 @@ func TestSendMPPaymentFailed(t *testing.T) {
 			payment.HTLCs[i] = attempt
 			return
 		}
-
 	})
 
 	// Setup ReportPaymentFail to return nil reason and error so the

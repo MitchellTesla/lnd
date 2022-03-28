@@ -6,12 +6,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/btcsuite/btcd/btcec"
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/ecdsa"
+	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/btcutil/hdkeychain"
+	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
-	"github.com/btcsuite/btcutil/hdkeychain"
-	"github.com/btcsuite/btcutil/psbt"
 	"github.com/btcsuite/btcwallet/waddrmgr"
 	"github.com/btcsuite/btcwallet/wallet/txauthor"
 	"github.com/btcsuite/btcwallet/wtxmgr"
@@ -40,6 +42,9 @@ const (
 	// NestedWitnessPubKey represents a p2sh output which is itself a
 	// nested p2wkh output.
 	NestedWitnessPubKey
+
+	// TaprootPubkey represents a p2tr key path spending address.
+	TaprootPubkey
 )
 
 var (
@@ -78,6 +83,18 @@ type Utxo struct {
 	Confirmations int64
 	PkScript      []byte
 	wire.OutPoint
+	Derivation *psbt.Bip32Derivation
+	PrevTx     *wire.MsgTx
+}
+
+// OutputDetail contains additional information on a destination address.
+type OutputDetail struct {
+	OutputType   txscript.ScriptClass
+	Addresses    []btcutil.Address
+	PkScript     []byte
+	OutputIndex  int
+	Value        btcutil.Amount
+	IsOurAddress bool
 }
 
 // TransactionDetail describes a transaction with either inputs which belong to
@@ -114,8 +131,9 @@ type TransactionDetail struct {
 	// TotalFees is the total fee in satoshis paid by this transaction.
 	TotalFees int64
 
-	// DestAddresses are the destinations for a transaction
-	DestAddresses []btcutil.Address
+	// OutputDetails contains output data for each destination address, such
+	// as the output script and amount.
+	OutputDetails []OutputDetail
 
 	// RawTx returns the raw serialized transaction.
 	RawTx []byte
@@ -158,6 +176,12 @@ type WalletController interface {
 	// a non-nil error value of ErrNotMine should be returned instead.
 	FetchInputInfo(prevOut *wire.OutPoint) (*Utxo, error)
 
+	// ScriptForOutput returns the address, witness program and redeem
+	// script for a given UTXO. An error is returned if the UTXO does not
+	// belong to our wallet or it is not a managed pubKey address.
+	ScriptForOutput(output *wire.TxOut) (waddrmgr.ManagedPubKeyAddress,
+		[]byte, []byte, error)
+
 	// ConfirmedBalance returns the sum of all the wallet's unspent outputs
 	// that have at least confs confirmations. If confs is set to zero,
 	// then all unspent outputs, including those currently in the mempool
@@ -168,7 +192,8 @@ type WalletController interface {
 	// NOTE: Only witness outputs should be included in the computation of
 	// the total spendable balance of the wallet. We require this as only
 	// witness inputs can be used for funding channels.
-	ConfirmedBalance(confs int32, accountFilter string) (btcutil.Amount, error)
+	ConfirmedBalance(confs int32, accountFilter string) (btcutil.Amount,
+		error)
 
 	// NewAddress returns the next external or internal address for the
 	// wallet dictated by the value of the `change` parameter. If change is
@@ -194,10 +219,15 @@ type WalletController interface {
 	// IsOurAddress checks if the passed address belongs to this wallet
 	IsOurAddress(a btcutil.Address) bool
 
+	// AddressInfo returns the information about an address, if it's known
+	// to this wallet.
+	AddressInfo(a btcutil.Address) (waddrmgr.ManagedAddress, error)
+
 	// ListAccounts retrieves all accounts belonging to the wallet by
 	// default. A name and key scope filter can be provided to filter
 	// through all of the wallet accounts and return only those matching.
-	ListAccounts(string, *waddrmgr.KeyScope) ([]*waddrmgr.AccountProperties, error)
+	ListAccounts(string, *waddrmgr.KeyScope) ([]*waddrmgr.AccountProperties,
+		error)
 
 	// ImportAccount imports an account backed by an account extended public
 	// key. The master key fingerprint denotes the fingerprint of the root
@@ -228,7 +258,8 @@ type WalletController interface {
 	// in the case of legacy versions (xpub, tpub), an address type must be
 	// specified as we intend to not support importing BIP-44 keys into the
 	// wallet using the legacy pay-to-pubkey-hash (P2PKH) scheme.
-	ImportPublicKey(pubKey *btcec.PublicKey, addrType waddrmgr.AddressType) error
+	ImportPublicKey(pubKey *btcec.PublicKey,
+		addrType waddrmgr.AddressType) error
 
 	// SendOutputs funds, signs, and broadcasts a Bitcoin transaction paying
 	// out to the specified outputs. In the case the wallet has insufficient
@@ -237,8 +268,8 @@ type WalletController interface {
 	// be used when crafting the transaction.
 	//
 	// NOTE: This method requires the global coin selection lock to be held.
-	SendOutputs(outputs []*wire.TxOut,
-		feeRate chainfee.SatPerKWeight, minConfs int32, label string) (*wire.MsgTx, error)
+	SendOutputs(outputs []*wire.TxOut, feeRate chainfee.SatPerKWeight,
+		minConfs int32, label string) (*wire.MsgTx, error)
 
 	// CreateSimpleTx creates a Bitcoin transaction paying to the specified
 	// outputs. The transaction is not broadcasted to the network. In the
@@ -334,6 +365,17 @@ type WalletController interface {
 	// is set. Labels must not be empty, and they are limited to 500 chars.
 	LabelTransaction(hash chainhash.Hash, label string, overwrite bool) error
 
+	// FetchTx attempts to fetch a transaction in the wallet's database
+	// identified by the passed transaction hash. If the transaction can't
+	// be found, then a nil pointer is returned.
+	FetchTx(chainhash.Hash) (*wire.MsgTx, error)
+
+	// RemoveDescendants attempts to remove any transaction from the
+	// wallet's tx store (that may be unconfirmed) that spends outputs
+	// created by the passed transaction. This remove propagates
+	// recursively down the chain of descendent transactions.
+	RemoveDescendants(*wire.MsgTx) error
+
 	// FundPsbt creates a fully populated PSBT packet that contains enough
 	// inputs to fund the outputs specified in the passed in packet with the
 	// specified fee rate. If there is change left, a change output from the
@@ -352,6 +394,19 @@ type WalletController interface {
 	// to lock the inputs before handing them out.
 	FundPsbt(packet *psbt.Packet, minConfs int32,
 		feeRate chainfee.SatPerKWeight, account string) (int32, error)
+
+	// SignPsbt expects a partial transaction with all inputs and outputs
+	// fully declared and tries to sign all unsigned inputs that have all
+	// required fields (UTXO information, BIP32 derivation information,
+	// witness or sig scripts) set.
+	// If no error is returned, the PSBT is ready to be given to the next
+	// signer or to be finalized if lnd was the last signer.
+	//
+	// NOTE: This method only signs inputs (and only those it can sign), it
+	// does not perform any other tasks (such as coin selection, UTXO
+	// locking or input/output/fee value validation, PSBT finalization). Any
+	// input that is incomplete will be skipped.
+	SignPsbt(packet *psbt.Packet) error
 
 	// FinalizePsbt expects a partial transaction with all inputs and
 	// outputs fully declared and tries to sign all inputs that belong to
@@ -444,7 +499,7 @@ type MessageSigner interface {
 	// be found, then an error will be returned. The actual digest signed is
 	// the single or double SHA-256 of the passed message.
 	SignMessage(keyLoc keychain.KeyLocator, msg []byte,
-		doubleHash bool) (*btcec.Signature, error)
+		doubleHash bool) (*ecdsa.Signature, error)
 }
 
 // WalletDriver represents a "driver" for a particular concrete

@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
 	"github.com/lightningnetwork/lnd/funding"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/labels"
@@ -77,7 +77,6 @@ func testBasicChannelFunding(net *lntest.NetworkHarness, t *harnessTest) {
 		expType := carolCommitType
 
 		switch daveCommitType {
-
 		// Dave supports anchors, type will be what
 		// Carol supports.
 		case lnrpc.CommitmentType_ANCHORS:
@@ -139,7 +138,7 @@ test:
 				"---- basic channel funding subtest %s ----\n",
 				testName,
 			)
-			net.Alice.AddToLog(logLine)
+			net.Alice.AddToLogf(logLine)
 
 			success := t.t.Run(testName, func(t *testing.T) {
 				testFunding(cc, dc)
@@ -196,7 +195,6 @@ func basicChannelFundingTest(t *harnessTest, net *lntest.NetworkHarness,
 	// open or an error occurs in the funding process. A series of
 	// assertions will be executed to ensure the funding process completed
 	// successfully.
-	ctxb := context.Background()
 	chanPoint := openChannelAndAssert(
 		t, net, alice, bob,
 		lntest.OpenChannelParams{
@@ -207,16 +205,14 @@ func basicChannelFundingTest(t *harnessTest, net *lntest.NetworkHarness,
 		},
 	)
 
-	ctxt, _ := context.WithTimeout(ctxb, defaultTimeout)
-
-	err := alice.WaitForNetworkChannelOpen(ctxt, chanPoint)
+	err := alice.WaitForNetworkChannelOpen(chanPoint)
 	require.NoError(t.t, err, "alice didn't report channel")
 
-	err = bob.WaitForNetworkChannelOpen(ctxt, chanPoint)
+	err = bob.WaitForNetworkChannelOpen(chanPoint)
 	require.NoError(t.t, err, "bob didn't report channel")
 
 	cType, err := channelCommitType(alice, chanPoint)
-	require.NoError(t.t, err, "unable to get channnel type")
+	require.NoError(t.t, err, "unable to get channel type")
 
 	// With the channel open, ensure that the amount specified above has
 	// properly been pushed to Bob.
@@ -301,6 +297,7 @@ func testUnconfirmedChannelFunding(net *lntest.NetworkHarness, t *harnessTest) {
 	// response to a channel balance RPC.
 	checkChannelBalance := func(node *lntest.HarnessNode,
 		local, remote, pendingLocal, pendingRemote btcutil.Amount) {
+
 		expectedResponse := &lnrpc.ChannelBalanceResponse{
 			LocalBalance: &lnrpc.Amount{
 				Sat: uint64(local),
@@ -816,13 +813,11 @@ func testBatchChanFunding(net *lntest.NetworkHarness, t *harnessTest) {
 
 	block := mineBlocks(t, net, 6, 1)[0]
 	assertTxInBlock(t, block, txHash)
-	ctxt, cancel = context.WithTimeout(ctxb, defaultTimeout)
-	defer cancel()
-	err = net.Alice.WaitForNetworkChannelOpen(ctxt, chanPoint1)
+	err = net.Alice.WaitForNetworkChannelOpen(chanPoint1)
 	require.NoError(t.t, err)
-	err = net.Alice.WaitForNetworkChannelOpen(ctxt, chanPoint2)
+	err = net.Alice.WaitForNetworkChannelOpen(chanPoint2)
 	require.NoError(t.t, err)
-	err = net.Alice.WaitForNetworkChannelOpen(ctxt, chanPoint3)
+	err = net.Alice.WaitForNetworkChannelOpen(chanPoint3)
 	require.NoError(t.t, err)
 
 	// With the channel open, ensure that it is counted towards Carol's

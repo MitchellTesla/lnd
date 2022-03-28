@@ -220,7 +220,7 @@ func (m *SyncManager) syncerHandler() {
 		initialHistoricalSyncer *GossipSyncer
 
 		// initialHistoricalSyncSignal is a signal that will fire once
-		// the intiial historical sync has been completed. This is
+		// the initial historical sync has been completed. This is
 		// crucial to ensure that another historical sync isn't
 		// attempted just because the initialHistoricalSyncer was
 		// disconnected.
@@ -232,7 +232,7 @@ func (m *SyncManager) syncerHandler() {
 		initialHistoricalSyncSignal = s.ResetSyncedSignal()
 
 		// Restart the timer for our new historical sync peer. This will
-		// ensure that all initial syncers recevie an equivalent
+		// ensure that all initial syncers receive an equivalent
 		// duration before attempting the next sync. Without doing so we
 		// might attempt two historical sync back to back if a peer
 		// disconnects just before the ticker fires.
@@ -362,7 +362,7 @@ func (m *SyncManager) syncerHandler() {
 			// Otherwise, our initialHistoricalSyncer corresponds to
 			// the peer being disconnected, so we'll have to find a
 			// replacement.
-			log.Debug("Finding replacement for intitial " +
+			log.Debug("Finding replacement for initial " +
 				"historical sync")
 
 			s := m.forceHistoricalSync()
@@ -396,6 +396,13 @@ func (m *SyncManager) syncerHandler() {
 			if numActiveLeft <= 0 {
 				m.syncersMu.Unlock()
 				continue
+			}
+
+			// We may not even have enough inactive syncers to be
+			// transitted. In that case, we will transit all the
+			// inactive syncers.
+			if len(m.inactiveSyncers) < numActiveLeft {
+				numActiveLeft = len(m.inactiveSyncers)
 			}
 
 			log.Debugf("Attempting to transition %v passive "+
@@ -492,6 +499,10 @@ func (m *SyncManager) createGossipSyncer(peer lnpeer.Peer) *GossipSyncer {
 	// handle any sync transitions.
 	s.setSyncState(chansSynced)
 	s.setSyncType(PassiveSync)
+
+	log.Debugf("Created new GossipSyncer[state=%s type=%s] for peer=%v",
+		s.syncState(), s.SyncType(), peer)
+
 	return s
 }
 

@@ -14,14 +14,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/btcsuite/btcutil"
-	"github.com/jedib0t/go-pretty/table"
-	"github.com/jedib0t/go-pretty/text"
+	"github.com/btcsuite/btcd/btcutil"
+	"github.com/jedib0t/go-pretty/v6/table"
+	"github.com/jedib0t/go-pretty/v6/text"
 	"github.com/lightninglabs/protobuf-hex-display/jsonpb"
 	"github.com/lightningnetwork/lnd/chainreg"
 	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/routerrpc"
 	"github.com/lightningnetwork/lnd/lntypes"
+	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/record"
 	"github.com/lightningnetwork/lnd/routing/route"
@@ -200,7 +201,6 @@ var sendPaymentCommand = cli.Command{
 // default.
 func retrieveFeeLimit(ctx *cli.Context, amt int64) (int64, error) {
 	switch {
-
 	case ctx.IsSet("fee_limit") && ctx.IsSet("fee_limit_percent"):
 		return 0, fmt.Errorf("either fee_limit or fee_limit_percent " +
 			"can be set, but not both")
@@ -217,8 +217,10 @@ func retrieveFeeLimit(ctx *cli.Context, amt int64) (int64, error) {
 		return feeLimitRoundedUp, nil
 	}
 
-	// If no fee limit is set, use the payment amount as a limit (100%).
-	return amt, nil
+	// If no fee limit is set, use a default value based on the amount.
+	amtMsat := lnwire.NewMSatFromSatoshis(btcutil.Amount(amt))
+	limitMsat := lnwallet.DefaultRoutingFeeLimitForAmount(amtMsat)
+	return int64(limitMsat.ToSatoshis()), nil
 }
 
 func confirmPayReq(resp *lnrpc.PayReq, amt, feeLimit int64) error {
@@ -386,7 +388,6 @@ func sendPayment(ctx *cli.Context) error {
 		if err != nil {
 			return err
 		}
-		args = args.Tail()
 		req.FinalCltvDelta = int32(delta)
 	}
 
@@ -402,6 +403,7 @@ func sendPayment(ctx *cli.Context) error {
 
 func sendPaymentRequest(ctx *cli.Context,
 	req *routerrpc.SendPaymentRequest) error {
+
 	ctxc := getContext()
 
 	conn := getClientConn(ctx, false)
@@ -556,7 +558,10 @@ var trackPaymentCommand = cli.Command{
 	specified by the hash argument.
 	`,
 	ArgsUsage: "hash",
-	Action:    actionDecorator(trackPayment),
+	Flags: []cli.Flag{
+		jsonFlag,
+	},
+	Action: actionDecorator(trackPayment),
 }
 
 func trackPayment(ctx *cli.Context) error {
@@ -697,6 +702,7 @@ func formatMsat(amt int64) string {
 // formatPayment formats the payment state as an ascii table.
 func formatPayment(ctxc context.Context, payment *lnrpc.Payment,
 	aliases *aliasCache) string {
+
 	t := table.NewWriter()
 
 	// Build table header.
@@ -1282,7 +1288,6 @@ func forwardingHistory(ctx *cli.Context) error {
 			return fmt.Errorf("unable to decode max_events: %v", err)
 		}
 		maxEvents = uint32(m)
-		args = args.Tail()
 	}
 
 	req := &lnrpc.ForwardingHistoryRequest{
@@ -1517,7 +1522,7 @@ func deletePayments(ctx *cli.Context) error {
 	return nil
 }
 
-// ESC is the ASCII code for escape character
+// ESC is the ASCII code for escape character.
 const ESC = 27
 
 // clearCode defines a terminal escape code to clear the currently line and move

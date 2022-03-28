@@ -6,15 +6,14 @@ import (
 	"encoding/hex"
 	"testing"
 
-	"github.com/btcsuite/btcutil"
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/lightningnetwork/lnd/channeldb"
+	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/record"
 	"github.com/lightningnetwork/lnd/routing"
 	"github.com/lightningnetwork/lnd/routing/route"
 	"github.com/stretchr/testify/require"
-
-	"github.com/lightningnetwork/lnd/lnrpc"
 )
 
 const (
@@ -337,7 +336,6 @@ func TestUnmarshalMPP(t *testing.T) {
 func testUnmarshalMPP(t *testing.T, test unmarshalMPPTest) {
 	mpp, err := UnmarshalMPP(test.mpp)
 	switch test.outcome {
-
 	// Valid arguments should result in no error, a non-nil MPP record, and
 	// the fields should be set correctly.
 	case valid:

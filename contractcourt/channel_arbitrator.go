@@ -9,9 +9,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
 	"github.com/davecgh/go-spew/spew"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/input"
@@ -28,6 +28,12 @@ var (
 	// close a channel that's already in the process of doing so.
 	errAlreadyForceClosed = errors.New("channel is already in the " +
 		"process of being force closed")
+
+	// errChanArbShuttingDown is an error returned when the channel arb is
+	// shutting down during the hand-off in notifyContractUpdate. This is
+	// mainly used to be able to notify the original caller (the link) that
+	// an error occurred.
+	errChanArbShuttingDown = errors.New("channel arb shutting down")
 )
 
 const (
@@ -342,7 +348,7 @@ type ChannelArbitrator struct {
 	// htlcUpdates is a channel that is sent upon with new updates from the
 	// active channel. Each time a new commitment state is accepted, the
 	// set of HTLC's on the new state should be sent across this channel.
-	htlcUpdates <-chan *ContractUpdate
+	htlcUpdates chan *contractUpdateSignal
 
 	// activeResolvers is a slice of any active resolvers. This is used to
 	// be able to signal them for shutdown in the case that we shutdown.
@@ -378,7 +384,7 @@ func NewChannelArbitrator(cfg ChannelArbitratorConfig,
 		log:              log,
 		blocks:           make(chan int32, arbitratorBlockBufferSize),
 		signalUpdates:    make(chan *signalUpdateMsg),
-		htlcUpdates:      make(<-chan *ContractUpdate),
+		htlcUpdates:      make(chan *contractUpdateSignal),
 		resolutionSignal: make(chan struct{}),
 		forceCloseReqs:   make(chan *forceCloseReq),
 		activeHTLCs:      htlcSets,
@@ -612,8 +618,19 @@ func (c *ChannelArbitrator) relaunchResolvers(commitSet *CommitSet,
 	// We'll also fetch the historical state of this channel, as it should
 	// have been marked as closed by now, and supplement it to each resolver
 	// such that we can properly resolve our pending contracts.
-	chanState, err := c.cfg.FetchHistoricalChannel()
-	if err != nil {
+	var chanState *channeldb.OpenChannel
+	chanState, err = c.cfg.FetchHistoricalChannel()
+	switch {
+	// If we don't find this channel, then it may be the case that it
+	// was closed before we started to retain the final state
+	// information for open channels.
+	case err == channeldb.ErrNoHistoricalBucket:
+		fallthrough
+	case err == channeldb.ErrChannelNotFound:
+		log.Warnf("ChannelArbitrator(%v): unable to fetch historical "+
+			"state", c.cfg.ChanPoint)
+
+	case err != nil:
 		return err
 	}
 
@@ -621,7 +638,9 @@ func (c *ChannelArbitrator) relaunchResolvers(commitSet *CommitSet,
 		"resolvers", c.cfg.ChanPoint, len(unresolvedContracts))
 
 	for _, resolver := range unresolvedContracts {
-		resolver.SupplementState(chanState)
+		if chanState != nil {
+			resolver.SupplementState(chanState)
+		}
 
 		htlcResolver, ok := resolver.(htlcContractResolver)
 		if !ok {
@@ -734,8 +753,8 @@ const (
 	coopCloseTrigger
 
 	// breachCloseTrigger is a transition trigger driven by a remote breach
-	// being confirmed. In this case the channel arbitrator won't have to
-	// do anything, so we'll just clean up and exit gracefully.
+	// being confirmed. In this case the channel arbitrator will wait for
+	// the breacharbiter to finish and then clean up gracefully.
 	breachCloseTrigger
 )
 
@@ -839,9 +858,8 @@ func (c *ChannelArbitrator) stateStep(
 
 		// If the trigger is a cooperative close being confirmed, then
 		// we can go straight to StateFullyResolved, as there won't be
-		// any contracts to resolve. The same is true in the case of a
-		// breach.
-		case coopCloseTrigger, breachCloseTrigger:
+		// any contracts to resolve.
+		case coopCloseTrigger:
 			nextState = StateFullyResolved
 
 		// Otherwise, if this state advance was triggered by a
@@ -855,6 +873,14 @@ func (c *ChannelArbitrator) stateStep(
 			fallthrough
 		case remoteCloseTrigger:
 			nextState = StateContractClosed
+
+		case breachCloseTrigger:
+			nextContractState, err := c.checkLegacyBreach()
+			if nextContractState == StateError {
+				return nextContractState, nil, err
+			}
+
+			nextState = nextContractState
 		}
 
 	// If we're in this state, then we've decided to broadcast the
@@ -877,7 +903,23 @@ func (c *ChannelArbitrator) stateStep(
 				c.cfg.ChanPoint, trigger, StateContractClosed)
 			return StateContractClosed, closeTx, nil
 
-		case coopCloseTrigger, breachCloseTrigger:
+		case breachCloseTrigger:
+			nextContractState, err := c.checkLegacyBreach()
+			if nextContractState == StateError {
+				log.Infof("ChannelArbitrator(%v): unable to "+
+					"advance breach close resolution: %v",
+					c.cfg.ChanPoint, nextContractState)
+				return StateError, closeTx, err
+			}
+
+			log.Infof("ChannelArbitrator(%v): detected %s close "+
+				"after closing channel, fast-forwarding to %s"+
+				" to resolve contract", c.cfg.ChanPoint,
+				trigger, nextContractState)
+
+			return nextContractState, closeTx, nil
+
+		case coopCloseTrigger:
 			log.Infof("ChannelArbitrator(%v): detected %s "+
 				"close after closing channel, fast-forwarding "+
 				"to %s to resolve contract",
@@ -981,10 +1023,18 @@ func (c *ChannelArbitrator) stateStep(
 		case localCloseTrigger, remoteCloseTrigger:
 			nextState = StateContractClosed
 
-		// If a coop close or breach was confirmed, jump straight to
-		// the fully resolved state.
-		case coopCloseTrigger, breachCloseTrigger:
+		// If a coop close was confirmed, jump straight to the fully
+		// resolved state.
+		case coopCloseTrigger:
 			nextState = StateFullyResolved
+
+		case breachCloseTrigger:
+			nextContractState, err := c.checkLegacyBreach()
+			if nextContractState == StateError {
+				return nextContractState, closeTx, err
+			}
+
+			nextState = nextContractState
 		}
 
 		log.Infof("ChannelArbitrator(%v): trigger %v moving from "+
@@ -1512,7 +1562,7 @@ func (c *ChannelArbitrator) checkCommitChainActions(height uint32,
 		)
 
 		if toChain {
-			log.Debugf("ChannelArbitrator(%v): go to chain for "+
+			log.Infof("ChannelArbitrator(%v): go to chain for "+
 				"outgoing htlc %x: timeout=%v, "+
 				"blocks_until_expiry=%v, broadcast_delta=%v",
 				c.cfg.ChanPoint, htlc.RHash[:],
@@ -1527,7 +1577,7 @@ func (c *ChannelArbitrator) checkCommitChainActions(height uint32,
 	for _, htlc := range htlcs.incomingHTLCs {
 		// We'll need to go on-chain to pull an incoming HTLC iff we
 		// know the pre-image and it's close to timing out. We need to
-		// ensure that we claim the funds that our rightfully ours
+		// ensure that we claim the funds that are rightfully ours
 		// on-chain.
 		preimageAvailable, err := c.isPreimageAvailable(htlc.RHash)
 		if err != nil {
@@ -1543,7 +1593,7 @@ func (c *ChannelArbitrator) checkCommitChainActions(height uint32,
 		)
 
 		if toChain {
-			log.Debugf("ChannelArbitrator(%v): go to chain for "+
+			log.Infof("ChannelArbitrator(%v): go to chain for "+
 				"incoming htlc %x: timeout=%v, "+
 				"blocks_until_expiry=%v, broadcast_delta=%v",
 				c.cfg.ChanPoint, htlc.RHash[:],
@@ -1768,7 +1818,7 @@ func (c *ChannelArbitrator) checkRemoteDanglingActions(
 			continue
 		}
 
-		log.Tracef("ChannelArbitrator(%v): immediately failing "+
+		log.Infof("ChannelArbitrator(%v): immediately failing "+
 			"htlc=%x from remote commitment",
 			c.cfg.ChanPoint, htlc.RHash[:])
 
@@ -1804,7 +1854,7 @@ func (c *ChannelArbitrator) checkRemoteChainActions(
 		return nil, err
 	}
 
-	// With this actions computed, we'll now check the diff of the HTLCs on
+	// With these actions computed, we'll now check the diff of the HTLCs on
 	// the commitments, and cancel back any that are on the pending but not
 	// the non-pending.
 	remoteDiffActions := c.checkRemoteDiffActions(
@@ -1852,7 +1902,7 @@ func (c *ChannelArbitrator) checkRemoteDiffActions(height uint32,
 			actionMap[HtlcFailNowAction], htlc,
 		)
 
-		log.Tracef("ChannelArbitrator(%v): immediately failing "+
+		log.Infof("ChannelArbitrator(%v): immediately failing "+
 			"htlc=%x from remote commitment",
 			c.cfg.ChanPoint, htlc.RHash[:])
 	}
@@ -1875,7 +1925,7 @@ func (c *ChannelArbitrator) constructChainActions(confCommitSet *CommitSet,
 		return c.log.FetchChainActions()
 	}
 
-	// Otherwise we have the full commitment set written to disk, and can
+	// Otherwise, we have the full commitment set written to disk, and can
 	// proceed as normal.
 	htlcSets := confCommitSet.toActiveHTLCSets()
 	switch *confCommitSet.ConfCommitKey {
@@ -1906,7 +1956,7 @@ func (c *ChannelArbitrator) constructChainActions(confCommitSet *CommitSet,
 	return nil, fmt.Errorf("unable to locate chain actions")
 }
 
-// prepContractResolutions is called either int he case that we decide we need
+// prepContractResolutions is called either in the case that we decide we need
 // to go to chain, or the remote party goes to chain. Given a set of actions we
 // need to take for each HTLC, this method will return a set of contract
 // resolvers that will resolve the contracts on-chain if needed, and also a set
@@ -1930,8 +1980,19 @@ func (c *ChannelArbitrator) prepContractResolutions(
 	// We'll also fetch the historical state of this channel, as it should
 	// have been marked as closed by now, and supplement it to each resolver
 	// such that we can properly resolve our pending contracts.
-	chanState, err := c.cfg.FetchHistoricalChannel()
-	if err != nil {
+	var chanState *channeldb.OpenChannel
+	chanState, err = c.cfg.FetchHistoricalChannel()
+	switch {
+	// If we don't find this channel, then it may be the case that it
+	// was closed before we started to retain the final state
+	// information for open channels.
+	case err == channeldb.ErrNoHistoricalBucket:
+		fallthrough
+	case err == channeldb.ErrChannelNotFound:
+		log.Warnf("ChannelArbitrator(%v): unable to fetch historical "+
+			"state", c.cfg.ChanPoint)
+
+	case err != nil:
 		return nil, nil, err
 	}
 
@@ -1972,10 +2033,62 @@ func (c *ChannelArbitrator) prepContractResolutions(
 	commitHash := contractResolutions.CommitHash
 	failureMsg := &lnwire.FailPermanentChannelFailure{}
 
+	var htlcResolvers []ContractResolver
+
+	// We instantiate an anchor resolver if the commitment tx has an
+	// anchor.
+	if contractResolutions.AnchorResolution != nil {
+		anchorResolver := newAnchorResolver(
+			contractResolutions.AnchorResolution.AnchorSignDescriptor,
+			contractResolutions.AnchorResolution.CommitAnchor,
+			height, c.cfg.ChanPoint, resolverCfg,
+		)
+		htlcResolvers = append(htlcResolvers, anchorResolver)
+	}
+
+	// If this is a breach close, we'll create a breach resolver, determine
+	// the htlc's to fail back, and exit. This is done because the other
+	// steps taken for non-breach-closes do not matter for breach-closes.
+	if contractResolutions.BreachResolution != nil {
+		breachResolver := newBreachResolver(resolverCfg)
+		htlcResolvers = append(htlcResolvers, breachResolver)
+
+		// We'll use the CommitSet, we'll fail back all outgoing HTLC's
+		// that exist on either of the remote commitments. The map is
+		// used to deduplicate any shared htlc's.
+		remoteOutgoing := make(map[uint64]channeldb.HTLC)
+		for htlcSetKey, htlcs := range confCommitSet.HtlcSets {
+			if !htlcSetKey.IsRemote {
+				continue
+			}
+
+			for _, htlc := range htlcs {
+				if htlc.Incoming {
+					continue
+				}
+
+				remoteOutgoing[htlc.HtlcIndex] = htlc
+			}
+		}
+
+		// Now we'll loop over the map and create ResolutionMsgs for
+		// each of them.
+		for _, htlc := range remoteOutgoing {
+			failMsg := ResolutionMsg{
+				SourceChan: c.cfg.ShortChanID,
+				HtlcIndex:  htlc.HtlcIndex,
+				Failure:    failureMsg,
+			}
+
+			msgsToSend = append(msgsToSend, failMsg)
+		}
+
+		return htlcResolvers, msgsToSend, nil
+	}
+
 	// For each HTLC, we'll either act immediately, meaning we'll instantly
 	// fail the HTLC, or we'll act only once the transaction has been
 	// confirmed, in which case we'll need an HTLC resolver.
-	var htlcResolvers []ContractResolver
 	for htlcAction, htlcs := range htlcActions {
 		switch htlcAction {
 
@@ -2040,7 +2153,9 @@ func (c *ChannelArbitrator) prepContractResolutions(
 				resolver := newTimeoutResolver(
 					resolution, height, htlc, resolverCfg,
 				)
-				resolver.SupplementState(chanState)
+				if chanState != nil {
+					resolver.SupplementState(chanState)
+				}
 				htlcResolvers = append(htlcResolvers, resolver)
 			}
 
@@ -2097,7 +2212,9 @@ func (c *ChannelArbitrator) prepContractResolutions(
 				resolver := newOutgoingContestResolver(
 					resolution, height, htlc, resolverCfg,
 				)
-				resolver.SupplementState(chanState)
+				if chanState != nil {
+					resolver.SupplementState(chanState)
+				}
 				htlcResolvers = append(htlcResolvers, resolver)
 			}
 		}
@@ -2111,19 +2228,10 @@ func (c *ChannelArbitrator) prepContractResolutions(
 			*contractResolutions.CommitResolution, height,
 			c.cfg.ChanPoint, resolverCfg,
 		)
-		resolver.SupplementState(chanState)
+		if chanState != nil {
+			resolver.SupplementState(chanState)
+		}
 		htlcResolvers = append(htlcResolvers, resolver)
-	}
-
-	// We instantiate an anchor resolver if the commitmentment tx has an
-	// anchor.
-	if contractResolutions.AnchorResolution != nil {
-		anchorResolver := newAnchorResolver(
-			contractResolutions.AnchorResolution.AnchorSignDescriptor,
-			contractResolutions.AnchorResolution.CommitAnchor,
-			height, c.cfg.ChanPoint, resolverCfg,
-		)
-		htlcResolvers = append(htlcResolvers, anchorResolver)
 	}
 
 	return htlcResolvers, msgsToSend, nil
@@ -2285,6 +2393,41 @@ func (c *ChannelArbitrator) UpdateContractSignals(newSignals *ContractSignals) {
 	}
 }
 
+// contractUpdateSignal is a struct that carries the latest set of
+// ContractUpdate for a particular key. It also carries a done chan that should
+// be closed by the recipient.
+type contractUpdateSignal struct {
+	// newUpdate contains the latest ContractUpdate for a key.
+	newUpdate *ContractUpdate
+
+	// doneChan is an acknowledgement channel.
+	doneChan chan struct{}
+}
+
+// notifyContractUpdate notifies the ChannelArbitrator that a new
+// ContractUpdate is available from the link. The link will be paused until
+// this function returns.
+func (c *ChannelArbitrator) notifyContractUpdate(upd *ContractUpdate) error {
+	done := make(chan struct{})
+
+	select {
+	case c.htlcUpdates <- &contractUpdateSignal{
+		newUpdate: upd,
+		doneChan:  done,
+	}:
+	case <-c.quit:
+		return errChanArbShuttingDown
+	}
+
+	select {
+	case <-done:
+	case <-c.quit:
+		return errChanArbShuttingDown
+	}
+
+	return nil
+}
+
 // channelAttendant is the primary goroutine that acts at the judicial
 // arbitrator between our channel state, the remote channel peer, and the
 // blockchain (Our judge). This goroutine will ensure that we faithfully execute
@@ -2346,13 +2489,12 @@ func (c *ChannelArbitrator) channelAttendant(bestHeight int32) {
 			log.Tracef("ChannelArbitrator(%v) got new signal "+
 				"update!", c.cfg.ChanPoint)
 
-			// First, we'll update our set of signals.
-			c.htlcUpdates = signalUpdate.newSignals.HtlcUpdates
+			// We'll update the ShortChannelID.
 			c.cfg.ShortChanID = signalUpdate.newSignals.ShortChanID
 
-			// Now that the signals have been updated, we'll now
+			// Now that the signal has been updated, we'll now
 			// close the done channel to signal to the caller we've
-			// registered the new contracts.
+			// registered the new ShortChannelID.
 			close(signalUpdate.doneChan)
 
 		// A new set of HTLC's has been added or removed from the
@@ -2363,14 +2505,19 @@ func (c *ChannelArbitrator) channelAttendant(bestHeight int32) {
 			// htlcSetKey type included in this update in order to
 			// only monitor the HTLCs that are still active on this
 			// target commitment.
-			c.activeHTLCs[htlcUpdate.HtlcKey] = newHtlcSet(
-				htlcUpdate.Htlcs,
+			htlcKey := htlcUpdate.newUpdate.HtlcKey
+			c.activeHTLCs[htlcKey] = newHtlcSet(
+				htlcUpdate.newUpdate.Htlcs,
 			)
+
+			// Now that the activeHTLCs have been updated, we'll
+			// close the done channel.
+			close(htlcUpdate.doneChan)
 
 			log.Tracef("ChannelArbitrator(%v): fresh set of htlcs=%v",
 				c.cfg.ChanPoint,
 				newLogClosure(func() string {
-					return spew.Sdump(htlcUpdate)
+					return spew.Sdump(htlcUpdate.newUpdate)
 				}),
 			)
 
@@ -2544,14 +2691,59 @@ func (c *ChannelArbitrator) channelAttendant(bestHeight int32) {
 		// the ChainWatcher and BreachArbiter, we don't have to do
 		// anything in particular, so just advance our state and
 		// gracefully exit.
-		case <-c.cfg.ChainEvents.ContractBreach:
+		case breachInfo := <-c.cfg.ChainEvents.ContractBreach:
 			log.Infof("ChannelArbitrator(%v): remote party has "+
 				"breached channel!", c.cfg.ChanPoint)
 
+			// In the breach case, we'll only have anchor and
+			// breach resolutions.
+			contractRes := &ContractResolutions{
+				CommitHash:       breachInfo.CommitHash,
+				BreachResolution: breachInfo.BreachResolution,
+				AnchorResolution: breachInfo.AnchorResolution,
+			}
+
+			// We'll transition to the ContractClosed state and log
+			// the set of resolutions such that they can be turned
+			// into resolvers later on. We'll also insert the
+			// CommitSet of the latest set of commitments.
+			err := c.log.LogContractResolutions(contractRes)
+			if err != nil {
+				log.Errorf("Unable to write resolutions: %v",
+					err)
+				return
+			}
+			err = c.log.InsertConfirmedCommitSet(
+				&breachInfo.CommitSet,
+			)
+			if err != nil {
+				log.Errorf("Unable to write commit set: %v",
+					err)
+				return
+			}
+
+			// The channel is finally marked pending closed here as
+			// the breacharbiter and channel arbitrator have
+			// persisted the relevant states.
+			closeSummary := &breachInfo.CloseSummary
+			err = c.cfg.MarkChannelClosed(
+				closeSummary,
+				channeldb.ChanStatusRemoteCloseInitiator,
+			)
+			if err != nil {
+				log.Errorf("Unable to mark channel closed: %v",
+					err)
+				return
+			}
+
+			log.Infof("Breached channel=%v marked pending-closed",
+				breachInfo.BreachResolution.FundingOutPoint)
+
 			// We'll advance our state machine until it reaches a
 			// terminal state.
-			_, _, err := c.advanceState(
-				uint32(bestHeight), breachCloseTrigger, nil,
+			_, _, err = c.advanceState(
+				uint32(bestHeight), breachCloseTrigger,
+				&breachInfo.CommitSet,
 			)
 			if err != nil {
 				log.Errorf("Unable to advance state: %v", err)
@@ -2630,4 +2822,26 @@ func (c *ChannelArbitrator) channelAttendant(bestHeight int32) {
 			return
 		}
 	}
+}
+
+// checkLegacyBreach returns StateFullyResolved if the channel was closed with
+// a breach transaction before the channel arbitrator launched its own breach
+// resolver. StateContractClosed is returned if this is a modern breach close
+// with a breach resolver. StateError is returned if the log lookup failed.
+func (c *ChannelArbitrator) checkLegacyBreach() (ArbitratorState, error) {
+	// A previous version of the channel arbitrator would make the breach
+	// close skip to StateFullyResolved. If there are no contract
+	// resolutions in the bolt arbitrator log, then this is an older breach
+	// close. Otherwise, if there are resolutions, the state should advance
+	// to StateContractClosed.
+	_, err := c.log.FetchContractResolutions()
+	if err == errNoResolutions {
+		// This is an older breach close still in the database.
+		return StateFullyResolved, nil
+	} else if err != nil {
+		return StateError, err
+	}
+
+	// This is a modern breach close with resolvers.
+	return StateContractClosed, nil
 }

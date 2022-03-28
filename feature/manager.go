@@ -33,7 +33,7 @@ type Config struct {
 // feature sets.
 type Manager struct {
 	// fsets is a static map of feature set to raw feature vectors. Requests
-	// are fulfilled by cloning these interal feature vectors.
+	// are fulfilled by cloning these internal feature vectors.
 	fsets map[Set]*lnwire.RawFeatureVector
 }
 
@@ -91,6 +91,21 @@ func newManager(cfg Config, desc setDesc) (*Manager, error) {
 		if cfg.NoAnchors {
 			raw.Unset(lnwire.AnchorsZeroFeeHtlcTxOptional)
 			raw.Unset(lnwire.AnchorsZeroFeeHtlcTxRequired)
+
+			// If anchors are disabled, then we also need to
+			// disable all other features that depend on it as
+			// well, as otherwise we may create an invalid feature
+			// bit set.
+			for bit, depFeatures := range deps {
+				for depFeature := range depFeatures {
+					switch {
+					case depFeature == lnwire.AnchorsZeroFeeHtlcTxRequired:
+						fallthrough
+					case depFeature == lnwire.AnchorsZeroFeeHtlcTxOptional:
+						raw.Unset(bit)
+					}
+				}
+			}
 		}
 		if cfg.NoWumbo {
 			raw.Unset(lnwire.WumboChannelsOptional)

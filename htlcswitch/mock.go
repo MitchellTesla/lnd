@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/btcsuite/btcd/btcec"
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
 	"github.com/go-errors/errors"
 	sphinx "github.com/lightningnetwork/lightning-onion"
 	"github.com/lightningnetwork/lnd/chainntnfs"
@@ -610,7 +610,7 @@ func (s *mockServer) PubKey() [33]byte {
 }
 
 func (s *mockServer) IdentityKey() *btcec.PublicKey {
-	pubkey, _ := btcec.ParsePubKey(s.id[:], btcec.S256())
+	pubkey, _ := btcec.ParsePubKey(s.id[:])
 	return pubkey
 }
 
@@ -986,17 +986,18 @@ var _ htlcNotifier = (*mockHTLCNotifier)(nil)
 type mockHTLCNotifier struct{}
 
 func (h *mockHTLCNotifier) NotifyForwardingEvent(key HtlcKey, info HtlcInfo,
-	eventType HtlcEventType) {
+	eventType HtlcEventType) { // nolint:whitespace
 }
 
 func (h *mockHTLCNotifier) NotifyLinkFailEvent(key HtlcKey, info HtlcInfo,
-	eventType HtlcEventType, linkErr *LinkError, incoming bool) {
+	eventType HtlcEventType, linkErr *LinkError,
+	incoming bool) { // nolint:whitespace
 }
 
 func (h *mockHTLCNotifier) NotifyForwardingFailEvent(key HtlcKey,
-	eventType HtlcEventType) {
+	eventType HtlcEventType) { // nolint:whitespace
 }
 
 func (h *mockHTLCNotifier) NotifySettleEvent(key HtlcKey,
-	preimage lntypes.Preimage, eventType HtlcEventType) {
+	preimage lntypes.Preimage, eventType HtlcEventType) { // nolint:whitespace
 }

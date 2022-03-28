@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/btcsuite/btcutil"
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/lightningnetwork/lnd/chainreg"
 	"github.com/lightningnetwork/lnd/funding"
 	"github.com/lightningnetwork/lnd/lnrpc"
@@ -58,12 +58,10 @@ func testUpdateChanStatus(net *lntest.NetworkHarness, t *harnessTest) {
 
 	// Wait for Alice and Bob to receive the channel edge from the
 	// funding manager.
-	ctxt, cancel := context.WithTimeout(ctxb, defaultTimeout)
-	defer cancel()
-	err := alice.WaitForNetworkChannelOpen(ctxt, chanPoint)
+	err := alice.WaitForNetworkChannelOpen(chanPoint)
 	require.NoError(t.t, err, "alice didn't see the alice->bob channel")
 
-	err = bob.WaitForNetworkChannelOpen(ctxt, chanPoint)
+	err = bob.WaitForNetworkChannelOpen(chanPoint)
 	require.NoError(t.t, err, "bob didn't see the alice->bob channel")
 
 	// Launch a node for Carol which will connect to Alice and Bob in order
@@ -83,12 +81,9 @@ func testUpdateChanStatus(net *lntest.NetworkHarness, t *harnessTest) {
 	assertChannelUpdate := func(node *lntest.HarnessNode,
 		policy *lnrpc.RoutingPolicy) {
 
-		ctxt, cancel := context.WithTimeout(ctxb, defaultTimeout)
-		defer cancel()
-
 		require.NoError(
 			t.t, carol.WaitForChannelPolicyUpdate(
-				ctxt, node.PubKeyStr, policy, chanPoint, false,
+				node.PubKeyStr, policy, chanPoint, false,
 			), "error while waiting for channel update",
 		)
 	}
@@ -398,7 +393,7 @@ func testGraphTopologyNtfns(net *lntest.NetworkHarness, t *harnessTest, pinned b
 	// Bob stimmy.
 	net.SendCoins(t.t, btcutil.SatoshiPerBitcoin, bob)
 
-	// Assert that Bob has the correct sync type before proceeeding.
+	// Assert that Bob has the correct sync type before proceeding.
 	if pinned {
 		assertSyncType(t, alice, bobPubkey, lnrpc.Peer_PINNED_SYNC)
 	} else {
@@ -431,7 +426,7 @@ func testGraphTopologyNtfns(net *lntest.NetworkHarness, t *harnessTest, pinned b
 		// Ensure that a new update for both created edges is properly
 		// dispatched to our registered client.
 		case graphUpdate := <-graphSub.updateChan:
-			// Process all channel updates prsented in this update
+			// Process all channel updates presented in this update
 			// message.
 			for _, chanUpdate := range graphUpdate.ChannelUpdates {
 				switch chanUpdate.AdvertisingNode {

@@ -39,6 +39,9 @@ const (
 	defaultUtxoMinConf = 1
 )
 
+var errBadChanPoint = errors.New("expecting chan_point to be in format of: " +
+	"txid:index")
+
 func getContext() context.Context {
 	shutdownInterceptor, err := signal.Intercept()
 	if err != nil {
@@ -136,7 +139,8 @@ var newAddressCommand = cli.Command{
 	Description: `
 	Generate a wallet new address. Address-types has to be one of:
 	    - p2wkh:  Pay to witness key hash
-	    - np2wkh: Pay to nested witness key hash`,
+	    - np2wkh: Pay to nested witness key hash
+	    - p2tr:   Pay to taproot pubkey`,
 	Action: actionDecorator(newAddress),
 }
 
@@ -158,6 +162,8 @@ func newAddress(ctx *cli.Context) error {
 		addrType = lnrpc.AddressType_WITNESS_PUBKEY_HASH
 	case "np2wkh":
 		addrType = lnrpc.AddressType_NESTED_PUBKEY_HASH
+	case "p2tr":
+		addrType = lnrpc.AddressType_TAPROOT_PUBKEY
 	default:
 		return fmt.Errorf("invalid address type %v, support address type "+
 			"are: p2wkh and np2wkh", stringAddrType)
@@ -719,6 +725,12 @@ var closeChannelCommand = cli.Command{
 			Usage: "the output index for the funding output of the funding " +
 				"transaction",
 		},
+		cli.StringFlag{
+			Name: "chan_point",
+			Usage: "(optional) the channel point. If set, " +
+				"funding_txid and output_index flags and " +
+				"positional arguments will be ignored",
+		},
 		cli.BoolFlag{
 			Name:  "force",
 			Usage: "attempt an uncooperative closure",
@@ -1183,10 +1195,19 @@ func abandonChannel(ctx *cli.Context) error {
 // line. Both named options as well as unnamed parameters are supported.
 func parseChannelPoint(ctx *cli.Context) (*lnrpc.ChannelPoint, error) {
 	channelPoint := &lnrpc.ChannelPoint{}
+	var err error
 
 	args := ctx.Args()
 
 	switch {
+	case ctx.IsSet("chan_point"):
+		channelPoint, err = parseChanPoint(ctx.String("chan_point"))
+		if err != nil {
+			return nil, fmt.Errorf("unable to parse chan_point: "+
+				"%v", err)
+		}
+		return channelPoint, nil
+
 	case ctx.IsSet("funding_txid"):
 		channelPoint.FundingTxid = &lnrpc.ChannelPoint_FundingTxidStr{
 			FundingTxidStr: ctx.String("funding_txid"),
@@ -1953,7 +1974,16 @@ var updateChannelPolicyCommand = cli.Command{
 			Usage: "the fee rate that will be charged " +
 				"proportionally based on the value of each " +
 				"forwarded HTLC, the lowest possible rate is 0 " +
-				"with a granularity of 0.000001 (millionths)",
+				"with a granularity of 0.000001 (millionths). Can not " +
+				"be set at the same time as fee_rate_ppm.",
+		},
+		cli.Uint64Flag{
+			Name: "fee_rate_ppm",
+			Usage: "the fee rate ppm (parts per million) that " +
+				"will be charged proportionally based on the value of each " +
+				"forwarded HTLC, the lowest possible rate is 0 " +
+				"with a granularity of 0.000001 (millionths). Can not " +
+				"be set at the same time as fee_rate.",
 		},
 		cli.Int64Flag{
 			Name: "time_lock_delta",
@@ -1984,9 +2014,8 @@ var updateChannelPolicyCommand = cli.Command{
 
 func parseChanPoint(s string) (*lnrpc.ChannelPoint, error) {
 	split := strings.Split(s, ":")
-	if len(split) != 2 {
-		return nil, fmt.Errorf("expecting chan_point to be in format of: " +
-			"txid:index")
+	if len(split) != 2 || len(split[0]) == 0 || len(split[1]) == 0 {
+		return nil, errBadChanPoint
 	}
 
 	index, err := strconv.ParseInt(split[1], 10, 32)
@@ -2015,6 +2044,7 @@ func updateChannelPolicy(ctx *cli.Context) error {
 	var (
 		baseFee       int64
 		feeRate       float64
+		feeRatePpm    uint64
 		timeLockDelta int64
 		err           error
 	)
@@ -2034,8 +2064,12 @@ func updateChannelPolicy(ctx *cli.Context) error {
 	}
 
 	switch {
+	case ctx.IsSet("fee_rate") && ctx.IsSet("fee_rate_ppm"):
+		return fmt.Errorf("fee_rate or fee_rate_ppm can not both be set")
 	case ctx.IsSet("fee_rate"):
 		feeRate = ctx.Float64("fee_rate")
+	case ctx.IsSet("fee_rate_ppm"):
+		feeRatePpm = ctx.Uint64("fee_rate_ppm")
 	case args.Present():
 		feeRate, err = strconv.ParseFloat(args.First(), 64)
 		if err != nil {
@@ -2044,7 +2078,7 @@ func updateChannelPolicy(ctx *cli.Context) error {
 
 		args = args.Tail()
 	default:
-		return fmt.Errorf("fee_rate argument missing")
+		return fmt.Errorf("fee_rate or fee_rate_ppm argument missing")
 	}
 
 	switch {
@@ -2077,13 +2111,12 @@ func updateChannelPolicy(ctx *cli.Context) error {
 	if chanPointStr != "" {
 		chanPoint, err = parseChanPoint(chanPointStr)
 		if err != nil {
-			return fmt.Errorf("unable to parse chan point: %v", err)
+			return fmt.Errorf("unable to parse chan_point: %v", err)
 		}
 	}
 
 	req := &lnrpc.PolicyUpdateRequest{
 		BaseFeeMsat:   baseFee,
-		FeeRate:       feeRate,
 		TimeLockDelta: uint32(timeLockDelta),
 		MaxHtlcMsat:   ctx.Uint64("max_htlc_msat"),
 	}
@@ -2101,6 +2134,12 @@ func updateChannelPolicy(ctx *cli.Context) error {
 		req.Scope = &lnrpc.PolicyUpdateRequest_Global{
 			Global: true,
 		}
+	}
+
+	if feeRate != 0 {
+		req.FeeRate = feeRate
+	} else if feeRatePpm != 0 {
+		req.FeeRatePpm = uint32(feeRatePpm)
 	}
 
 	resp, err := client.UpdateChannelPolicy(ctxc, req)
@@ -2125,6 +2164,22 @@ func updateChannelPolicy(ctx *cli.Context) error {
 	printJSON(listFailedUpdateResp)
 
 	return nil
+}
+
+var fishCompletionCommand = cli.Command{
+	Name:   "fish-completion",
+	Hidden: true,
+	Action: func(c *cli.Context) error {
+		completion, err := c.App.ToFishCompletion()
+		if err != nil {
+			return err
+		}
+
+		// We don't want to suggest files, so we add this
+		// first line to the completions.
+		_, err = fmt.Printf("complete -c %q -f \n%s", c.App.Name, completion)
+		return err
+	},
 }
 
 var exportChanBackupCommand = cli.Command{
@@ -2211,7 +2266,7 @@ func exportChanBackup(ctx *cli.Context) error {
 	if chanPointStr != "" {
 		chanPointRPC, err := parseChanPoint(chanPointStr)
 		if err != nil {
-			return err
+			return fmt.Errorf("unable to parse chan_point: %v", err)
 		}
 
 		chanBackup, err := client.ExportChannelBackup(
@@ -2318,8 +2373,9 @@ var verifyChanBackupCommand = cli.Command{
 				"from exportchanbackup",
 		},
 		cli.StringFlag{
-			Name:  "multi_file",
-			Usage: "the path to a multi-channel back up file",
+			Name:      "multi_file",
+			Usage:     "the path to a multi-channel back up file",
+			TakesFile: true,
 		},
 	},
 	Action: actionDecorator(verifyChanBackup),
@@ -2400,8 +2456,9 @@ var restoreChanBackupCommand = cli.Command{
 				"from exportchanbackup",
 		},
 		cli.StringFlag{
-			Name:  "multi_file",
-			Usage: "the path to a multi-channel back up file",
+			Name:      "multi_file",
+			Usage:     "the path to a multi-channel back up file",
+			TakesFile: true,
 		},
 	},
 	Action: actionDecorator(restoreChanBackup),

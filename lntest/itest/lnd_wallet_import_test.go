@@ -9,11 +9,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/btcutil/hdkeychain"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
-	"github.com/btcsuite/btcutil/hdkeychain"
 	"github.com/btcsuite/btcwallet/waddrmgr"
 	"github.com/davecgh/go-spew/spew"
 	"github.com/lightningnetwork/lnd/funding"
@@ -496,11 +496,9 @@ func fundChanAndCloseFromImportedAccount(t *harnessTest, srcNode, destNode,
 		},
 		OutputIndex: upd.ChanPending.OutputIndex,
 	}
-	ctxt, cancel = context.WithTimeout(ctxb, defaultTimeout)
-	defer cancel()
-	err = srcNode.WaitForNetworkChannelOpen(ctxt, chanPoint)
+	err = srcNode.WaitForNetworkChannelOpen(chanPoint)
 	require.NoError(t.t, err)
-	err = destNode.WaitForNetworkChannelOpen(ctxt, chanPoint)
+	err = destNode.WaitForNetworkChannelOpen(chanPoint)
 	require.NoError(t.t, err)
 
 	// Send a test payment to ensure the channel is operating as normal.

@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io/ioutil"
 	"math"
-	"math/big"
 	"net"
 	"os"
 	"reflect"
@@ -18,10 +17,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/btcsuite/btcd/btcec"
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/ecdsa"
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/htlcswitch"
 	"github.com/lightningnetwork/lnd/kvdb"
@@ -87,12 +87,13 @@ var (
 )
 
 var (
-	testSig = &btcec.Signature{
-		R: new(big.Int),
-		S: new(big.Int),
-	}
-	_, _ = testSig.R.SetString("63724406601629180062774974542967536251589935445068131219452686511677818569431", 10)
-	_, _ = testSig.S.SetString("18801056069249825825291287104931333862866033135609736119018462340006816851118", 10)
+	testRBytes, _ = hex.DecodeString("8ce2bc69281ce27da07e6683571319d18e949ddfa2965fb6caa1bf0314f882d7")
+	testSBytes, _ = hex.DecodeString("299105481d63e0f4bc2a88121167221b6700d72a0ead154c03be696a292d24ae")
+	testRScalar   = new(btcec.ModNScalar)
+	testSScalar   = new(btcec.ModNScalar)
+	_             = testRScalar.SetByteSlice(testRBytes)
+	_             = testSScalar.SetByteSlice(testSBytes)
+	testSig       = ecdsa.NewSignature(testRScalar, testSScalar)
 
 	testAuthProof = channeldb.ChannelAuthProof{
 		NodeSig1Bytes:    testSig.Serialize(),
@@ -175,7 +176,7 @@ func makeTestGraph(useCache bool) (*channeldb.ChannelGraph, kvdb.Backend,
 	graph, err := channeldb.NewChannelGraph(
 		backend, opts.RejectCacheSize, opts.ChannelCacheSize,
 		opts.BatchCommitInterval, opts.PreAllocCacheNumNodes,
-		useCache,
+		useCache, false,
 	)
 	if err != nil {
 		cleanUp()
@@ -259,7 +260,7 @@ func parseTestGraph(useCache bool, path string) (*testGraphInstance, error) {
 		}
 		if len(privBytes) > 0 {
 			key, derivedPub := btcec.PrivKeyFromBytes(
-				btcec.S256(), privBytes,
+				privBytes,
 			)
 
 			if !bytes.Equal(
@@ -564,8 +565,7 @@ func createTestGraphFromChannels(useCache bool, testChannels []*testChannel,
 			0, 0, 0, 0, 0, 0, 0, nodeIndex + 1,
 		}
 
-		privKey, pubKey := btcec.PrivKeyFromBytes(btcec.S256(),
-			keyBytes)
+		privKey, pubKey := btcec.PrivKeyFromBytes(keyBytes)
 
 		if features == nil {
 			features = lnwire.EmptyFeatureVector()
@@ -614,8 +614,8 @@ func createTestGraphFromChannels(useCache bool, testChannels []*testChannel,
 
 	for _, testChannel := range testChannels {
 		for _, node := range []*testChannelEnd{
-			testChannel.Node1, testChannel.Node2} {
-
+			testChannel.Node1, testChannel.Node2,
+		} {
 			_, exists := aliasMap[node.Alias]
 			if !exists {
 				var features *lnwire.FeatureVector
@@ -1213,7 +1213,7 @@ func runPathFindingWithAdditionalEdges(t *testing.T, useCache bool) {
 	if err != nil {
 		t.Fatalf("unable to decode public key: %v", err)
 	}
-	dogePubKey, err := btcec.ParsePubKey(dogePubKeyBytes, btcec.S256())
+	dogePubKey, err := btcec.ParsePubKey(dogePubKeyBytes)
 	if err != nil {
 		t.Fatalf("unable to parse public key from bytes: %v", err)
 	}
@@ -1556,6 +1556,7 @@ func TestNewRoute(t *testing.T) {
 			if !reflect.DeepEqual(
 				finalHop.MPP, testCase.expectedMPP,
 			) {
+
 				t.Errorf("Expected final hop mpp field: %v, "+
 					" but got: %v instead",
 					testCase.expectedMPP, finalHop.MPP)
@@ -1713,7 +1714,6 @@ func runDestTLVGraphFallback(t *testing.T, useCache bool) {
 	sourceNode, err := ctx.graph.SourceNode()
 	if err != nil {
 		t.Fatalf("unable to fetch source node: %v", err)
-
 	}
 
 	find := func(r *RestrictParams,
@@ -2861,7 +2861,7 @@ func runEqualCostRouteSelection(t *testing.T, useCache bool) {
 	// Set up a test graph with two possible paths to the target: via a and
 	// via b. The routing fees and probabilities are chosen such that the
 	// algorithm will first explore target->a->source (backwards search).
-	// This route has fee 6 and a penality of 4 for the 25% success
+	// This route has fee 6 and a penalty of 4 for the 25% success
 	// probability. The algorithm will then proceed with evaluating
 	// target->b->source, which has a fee of 8 and a penalty of 2 for the
 	// 50% success probability. Both routes have the same path finding cost
