@@ -41,6 +41,9 @@ then watch it on chain. Taproot script spends are also supported through the
 * Add [update node announcement](https://github.com/lightningnetwork/lnd/pull/5587)
   for updating and propagating node information.
 
+* Add [--socksproxy](https://github.com/lightningnetwork/lnd/pull/6422)
+  to allow for RPC calls via Tor.
+
 ## Bug Fixes
 
 * [Pipelining an UpdateFulfillHTLC message now only happens when the related UpdateAddHTLC is locked-in.](https://github.com/lightningnetwork/lnd/pull/6246)
@@ -186,6 +189,10 @@ then watch it on chain. Taproot script spends are also supported through the
 * [Add a new method in `tlv` to encode an uint64/uint32 field using `BigSize`
   format.](https://github.com/lightningnetwork/lnd/pull/6421)
 
+* [Add new `bitcoind.config` and `bitcoind.rpccookie`
+  options](https://github.com/lightningnetwork/lnd/pull/6064) to allow
+  specifying non-default paths for the configuration and RPC cookie files.
+
 ## RPC Server
 
 * [Add value to the field
@@ -284,6 +291,7 @@ gRPC performance metrics (latency to process `GetInfo`, etc)](https://github.com
 * bitromortac
 * Bjarne Magnussen
 * BTCparadigm
+* Carl Dong
 * Carla Kirk-Cohen
 * Carsten Otto
 * Dan Bolser
@@ -293,6 +301,7 @@ gRPC performance metrics (latency to process `GetInfo`, etc)](https://github.com
 * Eugene Siegel
 * Hampus Sjöberg
 * henta
+* hieblmi
 * Joost Jager
 * Jordi Montes
 * LightningHelper
