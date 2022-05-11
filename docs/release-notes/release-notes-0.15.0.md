@@ -54,11 +54,25 @@ releases. Backward compatibility is not guaranteed!
 * Add [--socksproxy](https://github.com/lightningnetwork/lnd/pull/6422)
   to allow for RPC calls via Tor.
 
+* [Hop hints are now opt in when using `lncli
+  addinvoice`]https://github.com/lightningnetwork/lnd/pull/6523). Users now
+  need to explicitly specify the `--private` flag.
+
 ## Neutrino
 
 [Neutrino now suports BIP
 155](https://github.com/lightningnetwork/lnd/pull/6468), allowing it to connect
 to Bitcoin nodes that advertise a Tor v3 onion service address.
+
+[A new neutrino sub-server](https://github.com/lightningnetwork/lnd/pull/5652)
+capable of status checks, adding, disconnecting and listing peers, fetching
+compact filters and block/block headers.
+
+## Btcwallet
+
+* [Add option to configure the block and transaction subscription 
+  notifications from bitcoind to be obtained through polling of the RPC 
+  interface instead of using ZMQ](https://github.com/lightningnetwork/lnd/pull/6345)
 
 ## Bug Fixes
 
@@ -87,12 +101,6 @@ to Bitcoin nodes that advertise a Tor v3 onion service address.
   first](https://github.com/lightningnetwork/lnd/pull/6214).
 
 * [Fixed crash in MuSig2Combine](https://github.com/lightningnetwork/lnd/pull/6502)
-  
-## Neutrino
-
-* [New neutrino sub-server](https://github.com/lightningnetwork/lnd/pull/5652)
-  capable of status checks, adding, disconnecting and listing
-  peers, fetching compact filters and block/block headers.
 
 * [Added signature length
   validation](https://github.com/lightningnetwork/lnd/pull/6314) when calling
@@ -140,6 +148,9 @@ from occurring that would result in an erroneous force close.](https://github.co
 
 * [Ignore addresses with unknown types in NodeAnnouncements](
   https://github.com/lightningnetwork/lnd/pull/6435)
+
+* [Taproot wallet inputs can also be used to fund
+  channels](https://github.com/lightningnetwork/lnd/pull/6521)
 
 ## Routing
 
@@ -271,6 +282,8 @@ from occurring that would result in an erroneous force close.](https://github.co
   to the total number of payments (complete and incomplete) that are currently
   in the payment database](https://github.com/lightningnetwork/lnd/pull/6463).
 
+* [Remove `confirmation_height` field from PendingChannel proto](https://github.com/lightningnetwork/lnd/pull/6472)
+
 ## Database
 
 * [Add ForAll implementation for etcd to speed up
@@ -368,6 +381,7 @@ gRPC performance metrics (latency to process `GetInfo`, etc)](https://github.com
 * randymcmillan
 * Rong Ou
 * Thebora Kompanioni
+* Tommy Volk
 * Torkel Rogstad
 * Vsevolod Kaganovych
 * Yong Yu
