@@ -104,6 +104,11 @@ compact filters and block/block headers.
   arbitrator relying on htlcswitch to be started
   first](https://github.com/lightningnetwork/lnd/pull/6214).
 
+* [Fixed an issue where invoice notifications could be missed when using the
+   SubscribeSingleInvoice or SubscribeNotifications rpcs.](https://github.com/lightningnetwork/lnd/pull/6477)
+  
+## Neutrino
+
 * [Fixed crash in MuSig2Combine](https://github.com/lightningnetwork/lnd/pull/6502)
 
 * [Added signature length
@@ -248,6 +253,8 @@ from occurring that would result in an erroneous force close.](https://github.co
   the in-memory state to be cleaned up early if a session isn't expected to
   succeed anymore](https://github.com/lightningnetwork/lnd/pull/6495).
 
+* [Some of the invoice update logic has been refactored to be less verbose.](https://github.com/lightningnetwork/lnd/pull/6415)
+
 ## RPC Server
 
 * [Add value to the field
@@ -304,6 +311,10 @@ to the htlc interceptor API.
   constructs a justice transaction in case of a remote breach. The states can
   grow very large on disk given a busy operating channel, [which is now changed
   with a space deduction over (at least) 96 percents.](https://github.com/lightningnetwork/lnd/pull/6347) 
+
+* [Mobile builds now expose main sub-servers by default](https://github.com/lightningnetwork/lnd/pull/6464).
+  All API methods have prefixed the generated methods with the subserver name.
+  This is required to support subservers with name conflicts.
 
 ## Documentation
 
@@ -372,6 +383,7 @@ gRPC performance metrics (latency to process `GetInfo`, etc)](https://github.com
 * Elle Mouton
 * ErikEk
 * Eugene Siegel
+* Evan Kaloudis
 * Hampus Sjöberg
 * henta
 * hieblmi

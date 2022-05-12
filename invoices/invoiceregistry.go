@@ -355,12 +355,14 @@ func (i *InvoiceRegistry) dispatchToSingleClients(event *invoiceEvent) {
 			continue
 		}
 
-		if atomic.LoadUint32(&client.canceled) == 1 {
-			log.Errorf("Client(id=%v) has stopped, skipped "+
-				"notification for event(pay_hash=%v)",
-				client.id, payHash)
-			continue
+		select {
+		case <-client.backlogDelivered:
+			// We won't deliver any events until the backlog has
+			// went through first.
+		case <-i.quit:
+			return
 		}
+
 		client.notify(event)
 	}
 }
@@ -416,11 +418,19 @@ func (i *InvoiceRegistry) dispatchToClients(event *invoiceEvent) {
 		}
 
 		select {
-		case client.ntfnQueue.ChanIn() <- &invoiceEvent{
+		case <-client.backlogDelivered:
+			// We won't deliver any events until the backlog has
+			// been processed.
+		case <-i.quit:
+			return
+		}
+
+		err := client.notify(&invoiceEvent{
 			invoice: invoice,
 			setID:   event.setID,
-		}:
-		case <-i.quit:
+		})
+		if err != nil {
+			log.Errorf("Failed dispatching to client: %v", err)
 			return
 		}
 
@@ -697,8 +707,9 @@ func (i *InvoiceRegistry) cancelSingleHtlc(invoiceRef channeldb.InvoiceRef,
 	// Try to mark the specified htlc as canceled in the invoice database.
 	// Intercept the update descriptor to set the local updated variable. If
 	// no invoice update is performed, we can return early.
+	setID := (*channeldb.SetID)(invoiceRef.SetID())
 	var updated bool
-	invoice, err := i.cdb.UpdateInvoice(invoiceRef, nil,
+	invoice, err := i.cdb.UpdateInvoice(invoiceRef, setID,
 		func(invoice *channeldb.Invoice) (
 			*channeldb.InvoiceUpdateDesc, error) {
 
@@ -958,8 +969,15 @@ func (i *InvoiceRegistry) NotifyExitHopHtlc(rHash lntypes.Hash,
 	// main event loop.
 	case *htlcAcceptResolution:
 		if r.autoRelease {
+			var invRef channeldb.InvoiceRef
+			if ctx.amp != nil {
+				invRef = channeldb.InvoiceRefBySetID(*ctx.setID())
+			} else {
+				invRef = ctx.invoiceRef()
+			}
+
 			err := i.startHtlcTimer(
-				ctx.invoiceRef(), circuitKey, r.acceptTime,
+				invRef, circuitKey, r.acceptTime,
 			)
 			if err != nil {
 				return nil, err
@@ -1015,10 +1033,24 @@ func (i *InvoiceRegistry) notifyExitHopHtlcLocked(
 			return updateDesc, nil
 		},
 	)
+
+	if _, ok := err.(channeldb.ErrDuplicateSetID); ok {
+		return NewFailResolution(
+			ctx.circuitKey, ctx.currentHeight,
+			ResultInvoiceNotFound,
+		), nil, nil
+	}
+
 	switch err {
 	case channeldb.ErrInvoiceNotFound:
 		// If the invoice was not found, return a failure resolution
 		// with an invoice not found result.
+		return NewFailResolution(
+			ctx.circuitKey, ctx.currentHeight,
+			ResultInvoiceNotFound,
+		), nil, nil
+
+	case channeldb.ErrInvRefEquivocation:
 		return NewFailResolution(
 			ctx.circuitKey, ctx.currentHeight,
 			ResultInvoiceNotFound,
@@ -1389,7 +1421,10 @@ type invoiceSubscriptionKit struct {
 
 	canceled   uint32 // To be used atomically.
 	cancelChan chan struct{}
-	wg         sync.WaitGroup
+
+	// backlogDelivered is closed when the backlog events have been
+	// delivered.
+	backlogDelivered chan struct{}
 }
 
 // InvoiceSubscription represents an intent to receive updates for newly added
@@ -1445,13 +1480,15 @@ func (i *invoiceSubscriptionKit) Cancel() {
 
 	i.ntfnQueue.Stop()
 	close(i.cancelChan)
-
-	i.wg.Wait()
 }
 
 func (i *invoiceSubscriptionKit) notify(event *invoiceEvent) error {
 	select {
 	case i.ntfnQueue.ChanIn() <- event:
+	case <-i.cancelChan:
+		// This can only be triggered by delivery of non-backlog
+		// events.
+		return ErrShuttingDown
 	case <-i.quit:
 		return ErrShuttingDown
 	}
@@ -1473,12 +1510,16 @@ func (i *InvoiceRegistry) SubscribeNotifications(
 		addIndex:        addIndex,
 		settleIndex:     settleIndex,
 		invoiceSubscriptionKit: invoiceSubscriptionKit{
-			quit:       i.quit,
-			ntfnQueue:  queue.NewConcurrentQueue(20),
-			cancelChan: make(chan struct{}),
+			quit:             i.quit,
+			ntfnQueue:        queue.NewConcurrentQueue(20),
+			cancelChan:       make(chan struct{}),
+			backlogDelivered: make(chan struct{}),
 		},
 	}
 	client.ntfnQueue.Start()
+
+	// This notifies other goroutines that the backlog phase is over.
+	defer close(client.backlogDelivered)
 
 	// Always increment by 1 first, and our client ID will start with 1,
 	// not 0.
@@ -1543,6 +1584,10 @@ func (i *InvoiceRegistry) SubscribeNotifications(
 		}
 	}()
 
+	i.Lock()
+	i.notificationClients[client.id] = client
+	i.Unlock()
+
 	// Query the database to see if based on the provided addIndex and
 	// settledIndex we need to deliver any backlog notifications.
 	err := i.deliverBacklogEvents(client)
@@ -1551,12 +1596,6 @@ func (i *InvoiceRegistry) SubscribeNotifications(
 	}
 
 	log.Infof("New invoice subscription client: id=%v", client.id)
-
-	i.Lock()
-	// With the backlog notifications delivered (if any), we'll add this to
-	// our active subscriptions.
-	i.notificationClients[client.id] = client
-	i.Unlock()
 
 	return client, nil
 }
@@ -1569,13 +1608,17 @@ func (i *InvoiceRegistry) SubscribeSingleInvoice(
 	client := &SingleInvoiceSubscription{
 		Updates: make(chan *channeldb.Invoice),
 		invoiceSubscriptionKit: invoiceSubscriptionKit{
-			quit:       i.quit,
-			ntfnQueue:  queue.NewConcurrentQueue(20),
-			cancelChan: make(chan struct{}),
+			quit:             i.quit,
+			ntfnQueue:        queue.NewConcurrentQueue(20),
+			cancelChan:       make(chan struct{}),
+			backlogDelivered: make(chan struct{}),
 		},
 		invoiceRef: channeldb.InvoiceRefByHash(hash),
 	}
 	client.ntfnQueue.Start()
+
+	// This notifies other goroutines that the backlog phase is done.
+	defer close(client.backlogDelivered)
 
 	// Always increment by 1 first, and our client ID will start with 1,
 	// not 0.
@@ -1617,6 +1660,10 @@ func (i *InvoiceRegistry) SubscribeSingleInvoice(
 		}
 	}()
 
+	i.Lock()
+	i.singleNotificationClients[client.id] = client
+	i.Unlock()
+
 	err := i.deliverSingleBacklogEvents(client)
 	if err != nil {
 		return nil, err
@@ -1624,10 +1671,6 @@ func (i *InvoiceRegistry) SubscribeSingleInvoice(
 
 	log.Infof("New single invoice subscription client: id=%v, ref=%v",
 		client.id, client.invoiceRef)
-
-	i.Lock()
-	i.singleNotificationClients[client.id] = client
-	i.Unlock()
 
 	return client, nil
 }
