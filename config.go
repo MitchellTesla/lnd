@@ -859,7 +859,17 @@ func ValidateConfig(cfg Config, interceptor signal.Interceptor, fileParser,
 	cfg.BtcdMode.Dir = CleanAndExpandPath(cfg.BtcdMode.Dir)
 	cfg.LtcdMode.Dir = CleanAndExpandPath(cfg.LtcdMode.Dir)
 	cfg.BitcoindMode.Dir = CleanAndExpandPath(cfg.BitcoindMode.Dir)
+	cfg.BitcoindMode.ConfigPath = CleanAndExpandPath(
+		cfg.BitcoindMode.ConfigPath,
+	)
+	cfg.BitcoindMode.RPCCookie = CleanAndExpandPath(cfg.BitcoindMode.RPCCookie)
 	cfg.LitecoindMode.Dir = CleanAndExpandPath(cfg.LitecoindMode.Dir)
+	cfg.LitecoindMode.ConfigPath = CleanAndExpandPath(
+		cfg.LitecoindMode.ConfigPath,
+	)
+	cfg.LitecoindMode.RPCCookie = CleanAndExpandPath(
+		cfg.LitecoindMode.RPCCookie,
+	)
 	cfg.Tor.PrivateKeyPath = CleanAndExpandPath(cfg.Tor.PrivateKeyPath)
 	cfg.Tor.WatchtowerKeyPath = CleanAndExpandPath(cfg.Tor.WatchtowerKeyPath)
 	cfg.Watchtower.TowerDir = CleanAndExpandPath(cfg.Watchtower.TowerDir)
@@ -2001,10 +2011,6 @@ func extractBitcoindRPCParams(networkName, bitcoindDataDir, bitcoindConfigPath,
 		return "", "", "", "", err
 	}
 	userSubmatches := rpcUserRegexp.FindSubmatch(configContents)
-	if userSubmatches == nil {
-		return "", "", "", "", fmt.Errorf("unable to find rpcuser in " +
-			"config")
-	}
 
 	// Similarly, we'll use another regular expression to find the set
 	// rpcpass (if any). If we can't find the pass, then we'll exit with an
@@ -2014,6 +2020,18 @@ func extractBitcoindRPCParams(networkName, bitcoindDataDir, bitcoindConfigPath,
 		return "", "", "", "", err
 	}
 	passSubmatches := rpcPassRegexp.FindSubmatch(configContents)
+
+	// Exit with an error if the cookie file, is defined in config, and
+	// can not be found, with both rpcuser and rpcpassword undefined.
+	if rpcCookiePath != "" && userSubmatches == nil && passSubmatches == nil {
+		return "", "", "", "", fmt.Errorf("unable to open cookie file (%v)",
+			rpcCookiePath)
+	}
+
+	if userSubmatches == nil {
+		return "", "", "", "", fmt.Errorf("unable to find rpcuser in " +
+			"config")
+	}
 	if passSubmatches == nil {
 		return "", "", "", "", fmt.Errorf("unable to find rpcpassword " +
 			"in config")
