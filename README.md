@@ -94,3 +94,9 @@ preferably encrypted using our designated PGP key
 ## Further reading
 * [Step-by-step send payment guide with docker](https://github.com/lightningnetwork/lnd/tree/master/docker)
 * [Contribution guide](https://github.com/lightningnetwork/lnd/blob/master/docs/code_contribution_guidelines.md)
+
+<p align="center">
+
+  <img src="₿itcoin_core-2021.gif" alt="demo" />
+
+</p> 
