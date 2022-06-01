@@ -121,7 +121,10 @@ compact filters and block/block headers.
 
 * [Fixed an issue where lnd would end up sending an Error and triggering a force
   close.](https://github.com/lightningnetwork/lnd/pull/6518)
-  
+
+* [Fixed deadlock in the invoice registry](
+  https://github.com/lightningnetwork/lnd/pull/6600)
+
 ## Neutrino
 
 * [New neutrino sub-server](https://github.com/lightningnetwork/lnd/pull/5652)
@@ -282,6 +285,9 @@ from occurring that would result in an erroneous force close.](https://github.co
 
 * [Minor fix](https://github.com/lightningnetwork/lnd/pull/6535) to
   how bitcoind.rpccookie and bitocind.config are parsed from config file.
+
+* [Fix a data race found when running unit test for revocation log](https://github.com/lightningnetwork/lnd/pull/6594).
+
 
 ## RPC Server
 
