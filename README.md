@@ -24,6 +24,12 @@ through the network.
 * Updating advertised fee schedules.
 * Automatic channel management ([`autopilot`](https://github.com/lightningnetwork/lnd/tree/master/autopilot)).
 
+<p align="center">
+
+  <img src="₿itcoin_core-2021.gif" alt="demo" />
+
+</p> 
+
 ## Lightning Network Specification Compliance
 `lnd` _fully_ conforms to the [Lightning Network specification
 (BOLTs)](https://github.com/lightningnetwork/lightning-rfc). BOLT stands for:
@@ -95,8 +101,4 @@ preferably encrypted using our designated PGP key
 * [Step-by-step send payment guide with docker](https://github.com/lightningnetwork/lnd/tree/master/docker)
 * [Contribution guide](https://github.com/lightningnetwork/lnd/blob/master/docs/code_contribution_guidelines.md)
 
-<p align="center">
-
-  <img src="₿itcoin_core-2021.gif" alt="demo" />
-
-</p> 
+  
