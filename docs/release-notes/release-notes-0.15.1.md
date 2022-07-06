@@ -16,10 +16,16 @@
   addholdinvoice`](https://github.com/lightningnetwork/lnd/pull/6577). Users now
   need to explicitly specify the `--private` flag.
 
+## Database
+
+* [Delete failed payment attempts](https://github.com/lightningnetwork/lnd/pull/6438)
+  once payments are settled, unless specified with `keep-failed-payment-attempts` flag.
+
 ## Documentation
 
 * [Add minor comment](https://github.com/lightningnetwork/lnd/pull/6559) on
   subscribe/cancel/lookup invoice parameter encoding.
+* [Log pubkey for peer related messages](https://github.com/lightningnetwork/lnd/pull/6588).
   
 ## RPC Server
 
@@ -50,11 +56,19 @@
 * [The HtlcSwitch now waits for a ChannelLink to stop before replacing it. This fixes a race
   condition.](https://github.com/lightningnetwork/lnd/pull/6642)
 
+## Code Health
+
+### Code cleanup, refactor, typo fixes
+
+* [Migrate instances of assert.NoError to require.NoError](https://github.com/lightningnetwork/lnd/pull/6636).
+
 # Contributors (Alphabetical Order)
 
+* Carsten Otto
 * Elle Mouton
 * ErikEk
 * Eugene Siegel
 * Oliver Gugger
 * Priyansh Rastogi
+* Tommy Volk
 * Yong Yu
