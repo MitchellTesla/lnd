@@ -60,6 +60,11 @@
 * The `signrpc.SignMessage` and `signrpc.VerifyMessage` now supports [Schnorr
   signatures](https://github.com/lightningnetwork/lnd/pull/6722).
 
+* [A new flag `skip_temp_err` is added to
+  `SendToRoute`](https://github.com/lightningnetwork/lnd/pull/6545). Set it to
+  true so the payment won't be failed unless a terminal error has occurred,
+  which is useful for constructing MPP.
+
 ## Bug Fixes
 
 * Fixed data race found in
@@ -83,6 +88,9 @@
 
 * [Fixes a key scope issue preventing new remote signing setups to be created
   with `v0.15.0-beta`](https://github.com/lightningnetwork/lnd/pull/6714).
+
+* [Re-initialise registered middleware index lookup map after removal of a 
+  registered middleware](https://github.com/lightningnetwork/lnd/pull/6739)
 
 ## Code Health
 
