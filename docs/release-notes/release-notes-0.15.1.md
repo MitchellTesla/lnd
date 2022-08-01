@@ -65,6 +65,10 @@
   true so the payment won't be failed unless a terminal error has occurred,
   which is useful for constructing MPP.
 
+* [Add a message to the RPC MW registration 
+  flow](https://github.com/lightningnetwork/lnd/pull/6754) so that the server 
+  can indicate to the client that it has completed the RPC MW registration.
+
 ## Bug Fixes
 
 * Fixed data race found in
@@ -72,6 +76,8 @@
 
 * [Fixed a bug in the `SignPsbt` RPC that produced an invalid response when
   signing a NP2WKH input](https://github.com/lightningnetwork/lnd/pull/6687).
+
+* [Fix race condition in `sign_psbt` test](https://github.com/lightningnetwork/lnd/pull/6741).
 
 * [Update the `urfave/cli`
   package](https://github.com/lightningnetwork/lnd/pull/6682) because of a flag
@@ -116,6 +122,7 @@
 * Elle Mouton
 * ErikEk
 * Eugene Siegel
+* Matt Morehouse
 * Slyghtning
 * Oliver Gugger
 * Olaoluwa Osuntokun
