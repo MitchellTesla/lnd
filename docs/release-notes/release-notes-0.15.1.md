@@ -1,6 +1,10 @@
 # Release Notes
 
-## Protocol Extensions
+## Protocol/Spec Updates
+
+* [We'll now no longer clamp the co-op close fee to the commitment
+ fee](https://github.com/lightningnetwork/lnd/pull/6770). Instead, if users are
+ the initiator, they can now specify a max fee that should be respected.
 
 ### Zero-Conf Channel Opens
 * [Introduces support for zero-conf channel opens and non-zero-conf option_scid_alias channels.](https://github.com/lightningnetwork/lnd/pull/5955)
@@ -10,6 +14,12 @@
 * [Add the release build directory to the `.gitignore` file to avoid the release
   binary digest to be different whether that folder exists or
   not](https://github.com/lightningnetwork/lnd/pull/6676).
+
+## Taproot
+
+[`lnd` will now refuse to start if it detects the full node backned does not
+support Tapoot](https://github.com/lightningnetwork/lnd/pull/6798).
+
 
 ## `lncli`
 
@@ -88,6 +98,10 @@
 
 ## Bug Fixes
 
+* [LND no longer creates non-standard transactions when calling SendCoins with the
+  all flag. This would manifest with p2wsh/p2pkh output scripts at
+  1sat/vbyte.](https://github.com/lightningnetwork/lnd/pull/6740)
+
 * Fixed data race found in
   [`TestSerializeHTLCEntries`](https://github.com/lightningnetwork/lnd/pull/6673).
 
@@ -115,6 +129,12 @@
 * [Re-initialise registered middleware index lookup map after removal of a 
   registered middleware](https://github.com/lightningnetwork/lnd/pull/6739)
 
+* [Bitcoind cookie file path can be specified with zmq
+  options](https://github.com/lightningnetwork/lnd/pull/6736)
+
+* [Remove `ScidAliasOptional` dependency on 
+`ExplicitChannelTypeOptional`](https://github.com/lightningnetwork/lnd/pull/6809)
+
 ## Code Health
 
 ### Code cleanup, refactor, typo fixes
@@ -135,10 +155,12 @@
 
 # Contributors (Alphabetical Order)
 
+* bitromortac
 * Carsten Otto
 * Elle Mouton
 * ErikEk
 * Eugene Siegel
+* Jordi Montes
 * Matt Morehouse
 * Slyghtning
 * Oliver Gugger
