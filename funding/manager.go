@@ -131,7 +131,7 @@ var (
 // via a local signal such as RPC.
 //
 // TODO(roasbeef): actually use the context package
-//  * deadlines, etc.
+//   - deadlines, etc.
 type reservationWithCtx struct {
 	reservation *lnwallet.ChannelReservation
 	peer        lnpeer.Peer
@@ -981,6 +981,22 @@ func (f *Manager) stateStep(channel *channeldb.OpenChannel,
 	// fundingLocked was sent to peer, but the channel was not added to the
 	// router graph and the channel announcement was not sent.
 	case fundingLockedSent:
+		// We must wait until we've received the peer's funding locked
+		// before sending a channel_update according to BOLT#07.
+		received, err := f.receivedFundingLocked(
+			channel.IdentityPub, chanID,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to check if funding locked "+
+				"was received: %v", err)
+		}
+
+		if !received {
+			// We haven't received FundingLocked, so we'll continue
+			// to the next iteration of the loop.
+			return nil
+		}
+
 		var peerAlias *lnwire.ShortChannelID
 		if channel.IsZeroConf() {
 			// We'll need to wait until funding_locked has been
@@ -1003,7 +1019,7 @@ func (f *Manager) stateStep(channel *channeldb.OpenChannel,
 			peerAlias = &foundAlias
 		}
 
-		err := f.addToRouterGraph(channel, shortChanID, peerAlias, nil)
+		err = f.addToRouterGraph(channel, shortChanID, peerAlias, nil)
 		if err != nil {
 			return fmt.Errorf("failed adding to "+
 				"router graph: %v", err)
@@ -1369,6 +1385,18 @@ func (f *Manager) handleFundingOpen(peer lnpeer.Peer,
 		zeroConf = featureVec.IsSet(lnwire.ZeroConfRequired)
 		scid = featureVec.IsSet(lnwire.ScidAliasRequired)
 
+		// If the zero-conf channel type was negotiated, ensure that
+		// the acceptor allows it.
+		if zeroConf && !acceptorResp.ZeroConf {
+			// Fail the funding flow.
+			flowErr := fmt.Errorf("channel acceptor blocked " +
+				"zero-conf channel negotiation")
+			f.failFundingFlow(
+				peer, msg.PendingChannelID, flowErr,
+			)
+			return
+		}
+
 		// If the zero-conf channel type wasn't negotiated and the
 		// fundee still wants a zero-conf channel, perform more checks.
 		// Require that both sides have the scid-alias feature bit set.
@@ -1388,9 +1416,6 @@ func (f *Manager) handleFundingOpen(peer lnpeer.Peer,
 			// Set zeroConf to true to enable the zero-conf flow.
 			zeroConf = true
 		}
-
-		// TODO: default to zero-conf false all the time unless
-		// acceptor even with chan-type?
 	}
 
 	// Sending the option-scid-alias channel type for a public channel is
@@ -1486,16 +1511,7 @@ func (f *Manager) handleFundingOpen(peer lnpeer.Peer,
 	// (if any) in lieu of user input.
 	shutdown, err := getUpfrontShutdownScript(
 		f.cfg.EnableUpfrontShutdown, peer, acceptorResp.UpfrontShutdown,
-		func() (lnwire.DeliveryAddress, error) {
-			addr, err := f.cfg.Wallet.NewAddress(
-				lnwallet.WitnessPubKey, false,
-				lnwallet.DefaultAccountName,
-			)
-			if err != nil {
-				return nil, err
-			}
-			return txscript.PayToAddrScript(addr)
-		},
+		f.selectShutdownScript,
 	)
 	if err != nil {
 		f.failFundingFlow(
@@ -2871,6 +2887,44 @@ func (f *Manager) sendFundingLocked(completeChan *channeldb.OpenChannel,
 	return nil
 }
 
+// receivedFundingLocked checks whether or not we've received a FundingLocked
+// from the remote peer. If we have, RemoteNextRevocation will be set.
+func (f *Manager) receivedFundingLocked(node *btcec.PublicKey,
+	chanID lnwire.ChannelID) (bool, error) {
+
+	// If the funding manager has exited, return an error to stop looping.
+	// Note that the peer may appear as online while the funding manager
+	// has stopped due to the shutdown order in the server.
+	select {
+	case <-f.quit:
+		return false, ErrFundingManagerShuttingDown
+	default:
+	}
+
+	// Check whether the peer is online. If it's not, we'll wait for them
+	// to come online before proceeding. This is to avoid a tight loop if
+	// they're offline.
+	connected := make(chan lnpeer.Peer, 1)
+	var peerKey [33]byte
+	copy(peerKey[:], node.SerializeCompressed())
+	f.cfg.NotifyWhenOnline(peerKey, connected)
+
+	select {
+	case <-connected:
+	case <-f.quit:
+		return false, ErrFundingManagerShuttingDown
+	}
+
+	channel, err := f.cfg.FindChannel(node, chanID)
+	if err != nil {
+		log.Errorf("Unable to locate ChannelID(%v) to determine if "+
+			"FundingLocked was received", chanID)
+		return false, err
+	}
+
+	return channel.RemoteNextRevocation != nil, nil
+}
+
 // extractAnnounceParams extracts the various channel announcement and update
 // parameters that will be needed to construct a ChannelAnnouncement and a
 // ChannelUpdate.
@@ -3689,7 +3743,7 @@ func (f *Manager) InitFundingWorkflow(msg *InitFundingMsg) {
 // upfront shutdown scripts automatically.
 func getUpfrontShutdownScript(enableUpfrontShutdown bool, peer lnpeer.Peer,
 	script lnwire.DeliveryAddress,
-	getScript func() (lnwire.DeliveryAddress, error)) (lnwire.DeliveryAddress,
+	getScript func(bool) (lnwire.DeliveryAddress, error)) (lnwire.DeliveryAddress,
 	error) {
 
 	// Check whether the remote peer supports upfront shutdown scripts.
@@ -3721,7 +3775,12 @@ func getUpfrontShutdownScript(enableUpfrontShutdown bool, peer lnpeer.Peer,
 		return nil, nil
 	}
 
-	return getScript()
+	// We can safely send a taproot address iff, both sides have negotiated
+	// the shutdown-any-segwit feature.
+	taprootOK := peer.RemoteFeatures().HasFeature(lnwire.ShutdownAnySegwitOptional) &&
+		peer.LocalFeatures().HasFeature(lnwire.ShutdownAnySegwitOptional)
+
+	return getScript(taprootOK)
 }
 
 // handleInitFundingMsg creates a channel reservation within the daemon's
@@ -3780,18 +3839,8 @@ func (f *Manager) handleInitFundingMsg(msg *InitFundingMsg) {
 	// address from the wallet if our node is configured to set shutdown
 	// address by default).
 	shutdown, err := getUpfrontShutdownScript(
-		f.cfg.EnableUpfrontShutdown, msg.Peer,
-		msg.ShutdownScript,
-		func() (lnwire.DeliveryAddress, error) {
-			addr, err := f.cfg.Wallet.NewAddress(
-				lnwallet.WitnessPubKey, false,
-				lnwallet.DefaultAccountName,
-			)
-			if err != nil {
-				return nil, err
-			}
-			return txscript.PayToAddrScript(addr)
-		},
+		f.cfg.EnableUpfrontShutdown, msg.Peer, msg.ShutdownScript,
+		f.selectShutdownScript,
 	)
 	if err != nil {
 		msg.Err <- err
@@ -4269,4 +4318,25 @@ func (f *Manager) deleteChannelOpeningState(chanPoint *wire.OutPoint) error {
 	return f.cfg.Wallet.Cfg.Database.DeleteChannelOpeningState(
 		outpointBytes.Bytes(),
 	)
+}
+
+// selectShutdownScript selects the shutdown script we should send to the peer.
+// If we can use taproot, then we prefer that, otherwise we'll use a p2wkh
+// script.
+func (f *Manager) selectShutdownScript(taprootOK bool,
+) (lnwire.DeliveryAddress, error) {
+
+	addrType := lnwallet.WitnessPubKey
+	if taprootOK {
+		addrType = lnwallet.TaprootPubkey
+	}
+
+	addr, err := f.cfg.Wallet.NewAddress(
+		addrType, false, lnwallet.DefaultAccountName,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return txscript.PayToAddrScript(addr)
 }
