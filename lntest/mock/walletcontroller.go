@@ -110,6 +110,13 @@ func (w *WalletController) RequiredReserve(uint32) btcutil.Amount {
 	return 0
 }
 
+// ListAddresses currently returns a dummy value.
+func (w *WalletController) ListAddresses(string,
+	bool) (lnwallet.AccountAddressMap, error) {
+
+	return nil, nil
+}
+
 // ImportAccount currently returns a dummy value.
 func (w *WalletController) ImportAccount(string, *hdkeychain.ExtendedKey,
 	uint32, *waddrmgr.AddressType, bool) (*waddrmgr.AccountProperties,
@@ -204,8 +211,8 @@ func (w *WalletController) FundPsbt(*psbt.Packet, int32, chainfee.SatPerKWeight,
 }
 
 // SignPsbt currently does nothing.
-func (w *WalletController) SignPsbt(*psbt.Packet) error {
-	return nil
+func (w *WalletController) SignPsbt(*psbt.Packet) ([]uint32, error) {
+	return nil, nil
 }
 
 // FinalizePsbt currently does nothing.
