@@ -1542,6 +1542,9 @@ func (r *rpcServer) NewAddress(ctx context.Context,
 		if err != nil {
 			return nil, err
 		}
+
+	default:
+		return nil, fmt.Errorf("unknown address type: %v", in.Type)
 	}
 
 	rpcsLog.Debugf("[newaddress] account=%v type=%v addr=%v", account,
@@ -5933,7 +5936,7 @@ func (r *rpcServer) GetNodeInfo(ctx context.Context,
 // within the HTLC.
 //
 // TODO(roasbeef): should return a slice of routes in reality
-//  * create separate PR to send based on well formatted route
+//   - create separate PR to send based on well formatted route
 func (r *rpcServer) QueryRoutes(ctx context.Context,
 	in *lnrpc.QueryRoutesRequest) (*lnrpc.QueryRoutesResponse, error) {
 
