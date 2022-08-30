@@ -1,5 +1,10 @@
 # Release Notes
 
+## BOLT Specs
+
+* Warning messages from peers are now recognized and
+  [logged](https://github.com/lightningnetwork/lnd/pull/6546) by lnd.
+
 ## RPC
 
 The `RegisterConfirmationsNtfn` call of the `chainnotifier` RPC sub-server [now
@@ -18,9 +23,20 @@ transaction](https://github.com/lightningnetwork/lnd/pull/6730).
 
 * [Add list addresses RPC](https://github.com/lightningnetwork/lnd/pull/6596).
 
+## Wallet
+
+* [Allows Taproot public keys and tap scripts to be imported as watch-only
+  addresses into the internal
+  wallet](https://github.com/lightningnetwork/lnd/pull/6775). NOTE that funding
+  PSBTs from imported tap scripts is not currently possible.
+
+## Build
+
+[The project has updated to Go
+1.19](https://github.com/lightningnetwork/lnd/pull/6795)! Go 1.18 is now the
+minimum version needed to build the project.
+
 ## Misc
-* Warning messages from peers are now recognized and
-  [logged](https://github.com/lightningnetwork/lnd/pull/6546) by lnd.
 
 * [Fixed error typo](https://github.com/lightningnetwork/lnd/pull/6659).
 
@@ -38,7 +54,13 @@ transaction](https://github.com/lightningnetwork/lnd/pull/6730).
   caller to specify key-value string pairs that should be appended to the 
   outgoing context.
 
+* [Fix](https://github.com/lightningnetwork/lnd/pull/6858) command line argument
+  parsing for `lncli sendpayment`.
+
 ## Code Health
+
+* [test: use `T.TempDir` to create temporary test 
+  directory](https://github.com/lightningnetwork/lnd/pull/6710)
 
 ### Tooling and documentation
 
