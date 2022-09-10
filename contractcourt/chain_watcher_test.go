@@ -14,6 +14,7 @@ import (
 	"github.com/lightningnetwork/lnd/lntest/mock"
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwire"
+	"github.com/stretchr/testify/require"
 )
 
 // TestChainWatcherRemoteUnilateralClose tests that the chain watcher is able
@@ -27,9 +28,7 @@ func TestChainWatcherRemoteUnilateralClose(t *testing.T) {
 	aliceChannel, bobChannel, cleanUp, err := lnwallet.CreateTestChannels(
 		channeldb.SingleFunderTweaklessBit,
 	)
-	if err != nil {
-		t.Fatalf("unable to create test channels: %v", err)
-	}
+	require.NoError(t, err, "unable to create test channels")
 	defer cleanUp()
 
 	// With the channels created, we'll now create a chain watcher instance
@@ -45,13 +44,9 @@ func TestChainWatcherRemoteUnilateralClose(t *testing.T) {
 		signer:              aliceChannel.Signer,
 		extractStateNumHint: lnwallet.GetStateNumHint,
 	})
-	if err != nil {
-		t.Fatalf("unable to create chain watcher: %v", err)
-	}
+	require.NoError(t, err, "unable to create chain watcher")
 	err = aliceChainWatcher.Start()
-	if err != nil {
-		t.Fatalf("unable to start chain watcher: %v", err)
-	}
+	require.NoError(t, err, "unable to start chain watcher")
 	defer aliceChainWatcher.Stop()
 
 	// We'll request a new channel event subscription from Alice's chain
@@ -118,9 +113,7 @@ func TestChainWatcherRemoteUnilateralClosePendingCommit(t *testing.T) {
 	aliceChannel, bobChannel, cleanUp, err := lnwallet.CreateTestChannels(
 		channeldb.SingleFunderTweaklessBit,
 	)
-	if err != nil {
-		t.Fatalf("unable to create test channels: %v", err)
-	}
+	require.NoError(t, err, "unable to create test channels")
 	defer cleanUp()
 
 	// With the channels created, we'll now create a chain watcher instance
@@ -136,9 +129,7 @@ func TestChainWatcherRemoteUnilateralClosePendingCommit(t *testing.T) {
 		signer:              aliceChannel.Signer,
 		extractStateNumHint: lnwallet.GetStateNumHint,
 	})
-	if err != nil {
-		t.Fatalf("unable to create chain watcher: %v", err)
-	}
+	require.NoError(t, err, "unable to create chain watcher")
 	if err := aliceChainWatcher.Start(); err != nil {
 		t.Fatalf("unable to start chain watcher: %v", err)
 	}
@@ -209,27 +200,19 @@ type dlpTestCase struct {
 // state) are returned.
 func executeStateTransitions(t *testing.T, htlcAmount lnwire.MilliSatoshi,
 	aliceChannel, bobChannel *lnwallet.LightningChannel,
-	numUpdates uint8) ([]*channeldb.OpenChannel, func(), error) {
+	numUpdates uint8) ([]*channeldb.OpenChannel, error) {
 
 	// We'll make a copy of the channel state before each transition.
 	var (
-		chanStates   []*channeldb.OpenChannel
-		cleanupFuncs []func()
+		chanStates []*channeldb.OpenChannel
 	)
 
-	cleanAll := func() {
-		for _, f := range cleanupFuncs {
-			f()
-		}
-	}
-
-	state, f, err := copyChannelState(aliceChannel.State())
+	state, err := copyChannelState(t, aliceChannel.State())
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	chanStates = append(chanStates, state)
-	cleanupFuncs = append(cleanupFuncs, f)
 
 	for i := 0; i < int(numUpdates); i++ {
 		addFakeHTLC(
@@ -238,21 +221,18 @@ func executeStateTransitions(t *testing.T, htlcAmount lnwire.MilliSatoshi,
 
 		err := lnwallet.ForceStateTransition(aliceChannel, bobChannel)
 		if err != nil {
-			cleanAll()
-			return nil, nil, err
+			return nil, err
 		}
 
-		state, f, err := copyChannelState(aliceChannel.State())
+		state, err := copyChannelState(t, aliceChannel.State())
 		if err != nil {
-			cleanAll()
-			return nil, nil, err
+			return nil, err
 		}
 
 		chanStates = append(chanStates, state)
-		cleanupFuncs = append(cleanupFuncs, f)
 	}
 
-	return chanStates, cleanAll, nil
+	return chanStates, nil
 }
 
 // TestChainWatcherDataLossProtect tests that if we've lost data (and are
@@ -287,7 +267,7 @@ func TestChainWatcherDataLossProtect(t *testing.T) {
 		// new HTLC to add to the commitment, and then lock in a state
 		// transition.
 		const htlcAmt = 1000
-		states, cleanStates, err := executeStateTransitions(
+		states, err := executeStateTransitions(
 			t, htlcAmt, aliceChannel, bobChannel,
 			testCase.BroadcastStateNum,
 		)
@@ -296,7 +276,6 @@ func TestChainWatcherDataLossProtect(t *testing.T) {
 				"transition: %v", err)
 			return false
 		}
-		defer cleanStates()
 
 		// We'll use the state this test case wants Alice to start at.
 		aliceChanState := states[testCase.NumUpdates]
@@ -464,7 +443,7 @@ func TestChainWatcherLocalForceCloseDetect(t *testing.T) {
 		// get more coverage of various state hint encodings beyond 0
 		// and 1.
 		const htlcAmt = 1000
-		states, cleanStates, err := executeStateTransitions(
+		states, err := executeStateTransitions(
 			t, htlcAmt, aliceChannel, bobChannel, numUpdates,
 		)
 		if err != nil {
@@ -472,7 +451,6 @@ func TestChainWatcherLocalForceCloseDetect(t *testing.T) {
 				"transition: %v", err)
 			return false
 		}
-		defer cleanStates()
 
 		// We'll use the state this test case wants Alice to start at.
 		aliceChanState := states[localState]

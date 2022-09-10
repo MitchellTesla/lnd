@@ -35,7 +35,6 @@ import (
 	"github.com/lightningnetwork/lnd/macaroons"
 	"github.com/lightningnetwork/lnd/rpcperms"
 	"github.com/lightningnetwork/lnd/signal"
-	"github.com/lightningnetwork/lnd/tor"
 	"github.com/lightningnetwork/lnd/walletunlocker"
 	"github.com/lightningnetwork/lnd/watchtower"
 	"github.com/lightningnetwork/lnd/watchtower/wtclient"
@@ -395,8 +394,12 @@ func (d *DefaultWalletImpl) BuildWalletConfig(ctx context.Context,
 	var macaroonService *macaroons.Service
 	if !d.cfg.NoMacaroons {
 		// Create the macaroon authentication/authorization service.
+		rootKeyStore, err := macaroons.NewRootKeyStorage(dbs.MacaroonDB)
+		if err != nil {
+			return nil, nil, nil, err
+		}
 		macaroonService, err = macaroons.NewService(
-			dbs.MacaroonDB, "lnd", walletInitParams.StatelessInit,
+			rootKeyStore, "lnd", walletInitParams.StatelessInit,
 			macaroons.IPLockChecker,
 			macaroons.CustomChecker(interceptorChain),
 		)
@@ -421,6 +424,17 @@ func (d *DefaultWalletImpl) BuildWalletConfig(ctx context.Context,
 			err := fmt.Errorf("unable to unlock macaroons: %v", err)
 			d.logger.Error(err)
 			return nil, nil, nil, err
+		}
+
+		// If we have a macaroon root key from the init wallet params,
+		// set the root key before baking any macaroons.
+		if len(walletInitParams.MacRootKey) > 0 {
+			err := macaroonService.SetRootKey(
+				walletInitParams.MacRootKey,
+			)
+			if err != nil {
+				return nil, nil, nil, err
+			}
 		}
 
 		// Send an admin macaroon to all our listeners that requested
@@ -691,7 +705,7 @@ func (d *RPCSignerWalletImpl) BuildChainControl(
 
 	rpcKeyRing, err := rpcwallet.NewRPCKeyRing(
 		baseKeyRing, walletController,
-		d.DefaultWalletImpl.cfg.RemoteSigner, walletConfig.CoinType,
+		d.DefaultWalletImpl.cfg.RemoteSigner, walletConfig.NetParams,
 	)
 	if err != nil {
 		err := fmt.Errorf("unable to create RPC remote signing wallet "+
@@ -853,6 +867,8 @@ func (d *DefaultDatabaseBuilder) BuildDatabase(
 		channeldb.OptionSetBatchCommitInterval(cfg.DB.BatchCommitInterval),
 		channeldb.OptionDryRunMigration(cfg.DryRunMigration),
 		channeldb.OptionSetUseGraphCache(!cfg.DB.NoGraphCache),
+		channeldb.OptionKeepFailedPaymentAttempts(cfg.KeepFailedPaymentAttempts),
+		channeldb.OptionPruneRevocationLog(cfg.DB.PruneRevocation),
 	}
 
 	// We want to pre-allocate the channel graph cache according to what we
@@ -966,14 +982,13 @@ func waitForWalletPassword(cfg *Config,
 		// seed. If it's greater than the current key derivation
 		// version, then we'll return an error as we don't understand
 		// this.
-		const latestVersion = keychain.KeyDerivationVersion
 		if cipherSeed != nil &&
-			cipherSeed.InternalVersion != latestVersion {
+			!keychain.IsKnownVersion(cipherSeed.InternalVersion) {
 
 			return nil, fmt.Errorf("invalid internal "+
-				"seed version %v, current version is %v",
+				"seed version %v, current max version is %v",
 				cipherSeed.InternalVersion,
-				keychain.KeyDerivationVersion)
+				keychain.CurrentKeyDerivationVersion)
 		}
 
 		loader, err := btcwallet.NewWalletLoader(
@@ -1061,6 +1076,7 @@ func waitForWalletPassword(cfg *Config,
 			UnloadWallet:    loader.UnloadWallet,
 			StatelessInit:   initMsg.StatelessInit,
 			MacResponseChan: pwService.MacResponseChan,
+			MacRootKey:      initMsg.MacRootKey,
 		}, nil
 
 	// The wallet has already been created in the past, and is simply being
@@ -1112,7 +1128,14 @@ func importWatchOnlyAccounts(wallet *wallet.Wallet,
 
 	for _, scope := range scopes {
 		addrSchema := waddrmgr.ScopeAddrMap[waddrmgr.KeyScopeBIP0084]
-		if scope.Scope.Purpose == waddrmgr.KeyScopeBIP0049Plus.Purpose {
+
+		// We want witness pubkey hash by default, except for BIP49
+		// where we want mixed and BIP86 where we want taproot address
+		// formats.
+		switch scope.Scope.Purpose {
+		case waddrmgr.KeyScopeBIP0049Plus.Purpose,
+			waddrmgr.KeyScopeBIP0086.Purpose:
+
 			addrSchema = waddrmgr.ScopeAddrMap[scope.Scope]
 		}
 
@@ -1194,43 +1217,12 @@ func initNeutrinoBackend(cfg *Config, chainDir string,
 		AddPeers:     cfg.NeutrinoMode.AddPeers,
 		ConnectPeers: cfg.NeutrinoMode.ConnectPeers,
 		Dialer: func(addr net.Addr) (net.Conn, error) {
-			dialAddr := addr
-			if tor.IsOnionFakeIP(addr) {
-				// Because the Neutrino address manager only
-				// knows IP addresses, we need to turn any fake
-				// tcp6 address that actually encodes an Onion
-				// v2 address back into the hostname
-				// representation before we can pass it to the
-				// dialer.
-				var err error
-				dialAddr, err = tor.FakeIPToOnionHost(addr)
-				if err != nil {
-					return nil, err
-				}
-			}
-
 			return cfg.net.Dial(
-				dialAddr.Network(), dialAddr.String(),
+				addr.Network(), addr.String(),
 				cfg.ConnectionTimeout,
 			)
 		},
 		NameResolver: func(host string) ([]net.IP, error) {
-			if tor.IsOnionHost(host) {
-				// Neutrino internally uses btcd's address
-				// manager which only operates on an IP level
-				// and does not understand onion hosts. We need
-				// to turn an onion host into a fake
-				// representation of an IP address to make it
-				// possible to connect to a block filter backend
-				// that serves on an Onion v2 hidden service.
-				fakeIP, err := tor.OnionHostToFakeIP(host)
-				if err != nil {
-					return nil, err
-				}
-
-				return []net.IP{fakeIP}, nil
-			}
-
 			addrs, err := cfg.net.LookupHost(host)
 			if err != nil {
 				return nil, err

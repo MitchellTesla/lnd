@@ -101,7 +101,10 @@ func actionDecorator(f func(*cli.Context) error) func(*cli.Context) error {
 			// two commands.
 			if s.Code() == codes.Unimplemented &&
 				(c.Command.Name == "create" ||
-					c.Command.Name == "unlock") {
+					c.Command.Name == "unlock" ||
+					c.Command.Name == "changepassword" ||
+					c.Command.Name == "createwatchonly") {
+
 				return fmt.Errorf("Wallet is already unlocked")
 			}
 
@@ -139,7 +142,8 @@ var newAddressCommand = cli.Command{
 	Description: `
 	Generate a wallet new address. Address-types has to be one of:
 	    - p2wkh:  Pay to witness key hash
-	    - np2wkh: Pay to nested witness key hash`,
+	    - np2wkh: Pay to nested witness key hash
+	    - p2tr:   Pay to taproot pubkey`,
 	Action: actionDecorator(newAddress),
 }
 
@@ -161,9 +165,11 @@ func newAddress(ctx *cli.Context) error {
 		addrType = lnrpc.AddressType_WITNESS_PUBKEY_HASH
 	case "np2wkh":
 		addrType = lnrpc.AddressType_NESTED_PUBKEY_HASH
+	case "p2tr":
+		addrType = lnrpc.AddressType_TAPROOT_PUBKEY
 	default:
 		return fmt.Errorf("invalid address type %v, support address type "+
-			"are: p2wkh and np2wkh", stringAddrType)
+			"are: p2wkh, np2wkh, and p2tr", stringAddrType)
 	}
 
 	client, cleanUp := getClient(ctx)
@@ -1127,7 +1133,7 @@ var abandonChannelCommand = cli.Command{
 	channels due to bugs fixed in newer versions of lnd.
 
 	Only available when lnd is built in debug mode. The flag
-	--i_know_what_im_doing can be set to override the debug/dev mode
+	--i_know_what_i_am_doing can be set to override the debug/dev mode
 	requirement.
 
 	To view which funding_txids/output_indexes can be used for this command,
@@ -1143,6 +1149,12 @@ var abandonChannelCommand = cli.Command{
 			Name: "output_index",
 			Usage: "the output index for the funding output of the funding " +
 				"transaction",
+		},
+		cli.StringFlag{
+			Name: "chan_point",
+			Usage: "(optional) the channel point. If set, " +
+				"funding_txid and output_index flags and " +
+				"positional arguments will be ignored",
 		},
 		cli.BoolFlag{
 			Name: "i_know_what_i_am_doing",
@@ -1405,6 +1417,31 @@ var listChannelsCommand = cli.Command{
 		},
 	},
 	Action: actionDecorator(listChannels),
+}
+
+var listAliasesCommand = cli.Command{
+	Name:     "listaliases",
+	Category: "Channels",
+	Usage:    "List all aliases.",
+	Flags:    []cli.Flag{},
+	Action:   actionDecorator(listaliases),
+}
+
+func listaliases(ctx *cli.Context) error {
+	ctxc := getContext()
+	client, cleanUp := getClient(ctx)
+	defer cleanUp()
+
+	req := &lnrpc.ListAliasesRequest{}
+
+	resp, err := client.ListAliases(ctxc, req)
+	if err != nil {
+		return err
+	}
+
+	printRespJSON(resp)
+
+	return nil
 }
 
 func listChannels(ctx *cli.Context) error {
@@ -2015,7 +2052,7 @@ func parseChanPoint(s string) (*lnrpc.ChannelPoint, error) {
 		return nil, errBadChanPoint
 	}
 
-	index, err := strconv.ParseInt(split[1], 10, 32)
+	index, err := strconv.ParseInt(split[1], 10, 64)
 	if err != nil {
 		return nil, fmt.Errorf("unable to decode output index: %v", err)
 	}

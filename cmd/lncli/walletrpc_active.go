@@ -43,6 +43,16 @@ var (
 			importPubKeyCommand,
 		},
 	}
+
+	// addressesCommand is a wallet subcommand that is responsible for
+	// address management operations.
+	addressesCommand = cli.Command{
+		Name:  "addresses",
+		Usage: "Interact with wallet addresses.",
+		Subcommands: []cli.Command{
+			listAddressesCommand,
+		},
+	}
 )
 
 // walletCommands will return the set of commands to enable for walletrpc
@@ -66,6 +76,8 @@ func walletCommands() []cli.Command {
 				listLeasesCommand,
 				psbtCommand,
 				accountsCommand,
+				requiredReserveCommand,
+				addressesCommand,
 			},
 		},
 	}
@@ -549,6 +561,8 @@ type utxoLease struct {
 	ID         string   `json:"id"`
 	OutPoint   OutPoint `json:"outpoint"`
 	Expiration uint64   `json:"expiration"`
+	PkScript   []byte   `json:"pk_script"`
+	Value      uint64   `json:"value"`
 }
 
 // fundPsbtResponse is a struct that contains JSON annotations for nice result
@@ -758,6 +772,8 @@ func marshallLocks(lockedUtxos []*walletrpc.UtxoLease) []*utxoLease {
 			ID:         hex.EncodeToString(lock.Id),
 			OutPoint:   NewOutPointFromProto(lock.Outpoint),
 			Expiration: lock.Expiration,
+			PkScript:   lock.PkScript,
+			Value:      lock.Value,
 		}
 	}
 
@@ -1070,6 +1086,101 @@ func listAccounts(ctx *cli.Context) error {
 		AddressType: addrType,
 	}
 	resp, err := walletClient.ListAccounts(ctxc, req)
+	if err != nil {
+		return err
+	}
+
+	printRespJSON(resp)
+
+	return nil
+}
+
+var requiredReserveCommand = cli.Command{
+	Name:  "requiredreserve",
+	Usage: "Returns the wallet reserve.",
+	Description: `
+	Returns the minimum amount of satoshis that should be kept in the
+	wallet in order to fee bump anchor channels if necessary. The value
+	scales with the number of public anchor channels but is	capped at
+	a maximum.
+
+	Use the flag --additional_channels to get the reserve value based
+	on the additional channels you would like to open.
+	`,
+	Flags: []cli.Flag{
+		cli.Uint64Flag{
+			Name: "additional_channels",
+			Usage: "(optional) specify the additional public channels " +
+				"that you would like to open",
+		},
+	},
+	Action: actionDecorator(requiredReserve),
+}
+
+func requiredReserve(ctx *cli.Context) error {
+	ctxc := getContext()
+
+	// Display the command's help message if we do not have the expected
+	// number of arguments/flags.
+	if ctx.NArg() > 0 || ctx.NumFlags() > 1 {
+		return cli.ShowCommandHelp(ctx, "requiredreserve")
+	}
+
+	walletClient, cleanUp := getWalletClient(ctx)
+	defer cleanUp()
+
+	req := &walletrpc.RequiredReserveRequest{
+		AdditionalPublicChannels: uint32(ctx.Uint64("additional_channels")),
+	}
+	resp, err := walletClient.RequiredReserve(ctxc, req)
+	if err != nil {
+		return err
+	}
+
+	printRespJSON(resp)
+
+	return nil
+}
+
+var listAddressesCommand = cli.Command{
+	Name:  "list",
+	Usage: "Retrieve information of existing on-chain wallet addresses.",
+	Description: `
+	Retrieves information of existing on-chain wallet addresses along with
+	their type, internal/external and balance.
+	`,
+	Flags: []cli.Flag{
+		cli.StringFlag{
+			Name: "account_name",
+			Usage: "(optional) only addreses matching this account " +
+				"are returned",
+		},
+		cli.BoolFlag{
+			Name: "show_custom_accounts",
+			Usage: "(optional) set this to true to show lnd's " +
+				"custom accounts",
+		},
+	},
+	Action: actionDecorator(listAddresses),
+}
+
+func listAddresses(ctx *cli.Context) error {
+	ctxc := getContext()
+
+	// Display the command's help message if we do not have the expected
+	// number of arguments/flags.
+	if ctx.NArg() > 0 || ctx.NumFlags() > 2 {
+		return cli.ShowCommandHelp(ctx, "list")
+	}
+
+	walletClient, cleanUp := getWalletClient(ctx)
+	defer cleanUp()
+
+	req := &walletrpc.ListAddressesRequest{
+		AccountName:        ctx.String("account_name"),
+		ShowCustomAccounts: ctx.Bool("show_custom_accounts"),
+	}
+	resp, err := walletClient.ListAddresses(ctxc, req)
 	if err != nil {
 		return err
 	}

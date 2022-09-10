@@ -4,14 +4,15 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"io/ioutil"
 	"strings"
 	"time"
 
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
 	"github.com/btcsuite/btcwallet/wallet"
 	"github.com/davecgh/go-spew/spew"
 	"github.com/lightningnetwork/lnd/chainreg"
@@ -340,8 +341,8 @@ func testSphinxReplayPersistence(net *lntest.NetworkHarness, t *harnessTest) {
 
 // testListChannels checks that the response from ListChannels is correct. It
 // tests the values in all ChannelConstraints are returned as expected. Once
-// ListChannels becomes mature, a test against all fields in ListChannels should
-// be performed.
+// ListChannels becomes mature, a test against all fields in ListChannels
+// should be performed.
 func testListChannels(net *lntest.NetworkHarness, t *harnessTest) {
 	ctxb := context.Background()
 
@@ -369,15 +370,17 @@ func testListChannels(net *lntest.NetworkHarness, t *harnessTest) {
 	net.SendCoins(t.t, btcutil.SatoshiPerBitcoin, alice)
 
 	// Open a channel with 100k satoshis between Alice and Bob with Alice
-	// being the sole funder of the channel. The minial HTLC amount is set to
-	// 4200 msats.
+	// being the sole funder of the channel. The minial HTLC amount is set
+	// to 4200 msats.
 	const customizedMinHtlc = 4200
 
 	chanAmt := btcutil.Amount(100000)
+	pushAmt := btcutil.Amount(1000)
 	chanPoint := openChannelAndAssert(
 		t, net, alice, bob,
 		lntest.OpenChannelParams{
 			Amt:            chanAmt,
+			PushAmt:        pushAmt,
 			MinHtlc:        customizedMinHtlc,
 			RemoteMaxHtlcs: aliceRemoteMaxHtlcs,
 		},
@@ -414,11 +417,19 @@ func testListChannels(net *lntest.NetworkHarness, t *harnessTest) {
 	// Check the returned response is correct.
 	aliceChannel := resp.Channels[0]
 
+	// Since Alice is the initiator, she pays the commit fee.
+	aliceBalance := int64(chanAmt) - aliceChannel.CommitFee - int64(pushAmt)
+
+	// Check the balance related fields are correct.
+	require.Equal(t.t, aliceBalance, aliceChannel.LocalBalance)
+	require.EqualValues(t.t, pushAmt, aliceChannel.RemoteBalance)
+	require.EqualValues(t.t, pushAmt, aliceChannel.PushAmountSat)
+
 	// Calculate the dust limit we'll use for the test.
 	dustLimit := lnwallet.DustLimitForSize(input.UnknownWitnessSize)
 
-	// defaultConstraints is a ChannelConstraints with default values. It is
-	// used to test against Alice's local channel constraints.
+	// defaultConstraints is a ChannelConstraints with default values. It
+	// is used to test against Alice's local channel constraints.
 	defaultConstraints := &lnrpc.ChannelConstraints{
 		CsvDelay:          4,
 		ChanReserveSat:    1000,
@@ -464,9 +475,14 @@ func testListChannels(net *lntest.NetworkHarness, t *harnessTest) {
 		)
 	}
 
-	// Check channel constraints match. Alice's local channel constraint should
-	// be equal to Bob's remote channel constraint, and her remote one should
-	// be equal to Bob's local one.
+	// Check the balance related fields are correct.
+	require.Equal(t.t, aliceBalance, bobChannel.RemoteBalance)
+	require.EqualValues(t.t, pushAmt, bobChannel.LocalBalance)
+	require.EqualValues(t.t, pushAmt, bobChannel.PushAmountSat)
+
+	// Check channel constraints match. Alice's local channel constraint
+	// should be equal to Bob's remote channel constraint, and her remote
+	// one should be equal to Bob's local one.
 	assertChannelConstraintsEqual(
 		t, aliceChannel.LocalConstraints, bobChannel.RemoteConstraints,
 	)
@@ -1657,4 +1673,152 @@ func testSweepAllCoins(net *lntest.NetworkHarness, t *harnessTest) {
 	if err == nil {
 		t.Fatalf("sweep attempt should fail")
 	}
+}
+
+// testListAddresses tests that we get all the addresses and their
+// corresponding balance correctly.
+func testListAddresses(net *lntest.NetworkHarness, t *harnessTest) {
+	ctxb := context.Background()
+
+	// First, we'll make a new node - Alice, which will be generating
+	// new addresses.
+	alice := net.NewNode(t.t, "Alice", nil)
+	defer shutdownAndAssert(net, t, alice)
+
+	// Next, we'll give Alice exactly 1 utxo of 1 BTC.
+	net.SendCoins(t.t, btcutil.SatoshiPerBitcoin, alice)
+
+	type addressDetails struct {
+		Balance int64
+		Type    walletrpc.AddressType
+	}
+
+	// A map of generated address and its balance.
+	generatedAddr := make(map[string]addressDetails)
+
+	// Create an address generated from internal keys.
+	keyLoc := &walletrpc.KeyReq{KeyFamily: 123}
+	keyDesc, err := alice.WalletKitClient.DeriveNextKey(ctxb, keyLoc)
+	require.NoError(t.t, err)
+
+	// Hex Encode the public key.
+	pubkeyString := hex.EncodeToString(keyDesc.RawKeyBytes)
+
+	// Create a p2tr address.
+	resp, err := alice.NewAddress(ctxb, &lnrpc.NewAddressRequest{
+		Type: lnrpc.AddressType_TAPROOT_PUBKEY,
+	})
+	require.NoError(t.t, err)
+	generatedAddr[resp.Address] = addressDetails{
+		Balance: 200_000,
+		Type:    walletrpc.AddressType_TAPROOT_PUBKEY,
+	}
+
+	// Create a p2wkh address.
+	resp, err = alice.NewAddress(ctxb, &lnrpc.NewAddressRequest{
+		Type: lnrpc.AddressType_WITNESS_PUBKEY_HASH,
+	})
+	require.NoError(t.t, err)
+	generatedAddr[resp.Address] = addressDetails{
+		Balance: 300_000,
+		Type:    walletrpc.AddressType_WITNESS_PUBKEY_HASH,
+	}
+
+	// Create a np2wkh address.
+	resp, err = alice.NewAddress(ctxb, &lnrpc.NewAddressRequest{
+		Type: lnrpc.AddressType_NESTED_PUBKEY_HASH,
+	})
+	require.NoError(t.t, err)
+	generatedAddr[resp.Address] = addressDetails{
+		Balance: 400_000,
+		Type:    walletrpc.AddressType_HYBRID_NESTED_WITNESS_PUBKEY_HASH,
+	}
+
+	for addr, addressDetail := range generatedAddr {
+		_, err := alice.SendCoins(ctxb, &lnrpc.SendCoinsRequest{
+			Addr:             addr,
+			Amount:           addressDetail.Balance,
+			SpendUnconfirmed: true,
+		})
+		require.NoError(t.t, err)
+	}
+
+	mineBlocks(t, net, 1, 3)
+
+	// Get all the accounts except LND's custom accounts.
+	addressLists, err := alice.WalletKitClient.ListAddresses(
+		ctxb, &walletrpc.ListAddressesRequest{},
+	)
+	require.NoError(t.t, err)
+
+	foundAddresses := 0
+	for _, addressList := range addressLists.AccountWithAddresses {
+		addresses := addressList.Addresses
+		derivationPath, err := parseDerivationPath(
+			addressList.DerivationPath,
+		)
+		require.NoError(t.t, err)
+
+		// Should not get an account with KeyFamily - 123.
+		require.NotEqual(
+			t.t, uint32(keyLoc.KeyFamily), derivationPath[2],
+		)
+
+		for _, address := range addresses {
+			if _, ok := generatedAddr[address.Address]; ok {
+				addrDetails := generatedAddr[address.Address]
+				require.Equal(
+					t.t, addrDetails.Balance,
+					address.Balance,
+				)
+				require.Equal(
+					t.t, addrDetails.Type,
+					addressList.AddressType,
+				)
+				foundAddresses++
+			}
+		}
+	}
+
+	require.Equal(t.t, len(generatedAddr), foundAddresses)
+	foundAddresses = 0
+
+	// Get all the accounts (including LND's custom accounts).
+	addressLists, err = alice.WalletKitClient.ListAddresses(
+		ctxb, &walletrpc.ListAddressesRequest{
+			ShowCustomAccounts: true,
+		},
+	)
+	require.NoError(t.t, err)
+
+	for _, addressList := range addressLists.AccountWithAddresses {
+		addresses := addressList.Addresses
+		derivationPath, err := parseDerivationPath(
+			addressList.DerivationPath,
+		)
+		require.NoError(t.t, err)
+
+		for _, address := range addresses {
+			// Check if the KeyFamily in derivation path is 123.
+			if uint32(keyLoc.KeyFamily) == derivationPath[2] {
+				// For LND's custom accounts, the address
+				// represents the public key.
+				pubkey := address.Address
+				require.Equal(t.t, pubkeyString, pubkey)
+			} else if _, ok := generatedAddr[address.Address]; ok {
+				addrDetails := generatedAddr[address.Address]
+				require.Equal(
+					t.t, addrDetails.Balance,
+					address.Balance,
+				)
+				require.Equal(
+					t.t, addrDetails.Type,
+					addressList.AddressType,
+				)
+				foundAddresses++
+			}
+		}
+	}
+
+	require.Equal(t.t, len(generatedAddr), foundAddresses)
 }

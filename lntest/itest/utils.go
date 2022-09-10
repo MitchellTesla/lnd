@@ -5,11 +5,15 @@ import (
 	"crypto/rand"
 	"fmt"
 	"io"
+	"strconv"
+	"strings"
 	"time"
 
+	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/rpcclient"
+	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
 	"github.com/go-errors/errors"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/lnrpc"
@@ -462,4 +466,86 @@ func findTxAtHeight(t *harnessTest, height int32,
 	}
 
 	return nil
+}
+
+// getOutputIndex returns the output index of the given address in the given
+// transaction.
+func getOutputIndex(t *harnessTest, miner *lntest.HarnessMiner,
+	txid *chainhash.Hash, addr string) int {
+
+	t.t.Helper()
+
+	// We'll then extract the raw transaction from the mempool in order to
+	// determine the index of the p2tr output.
+	tx, err := miner.Client.GetRawTransaction(txid)
+	require.NoError(t.t, err)
+
+	p2trOutputIndex := -1
+	for i, txOut := range tx.MsgTx().TxOut {
+		_, addrs, _, err := txscript.ExtractPkScriptAddrs(
+			txOut.PkScript, miner.ActiveNet,
+		)
+		require.NoError(t.t, err)
+
+		if addrs[0].String() == addr {
+			p2trOutputIndex = i
+		}
+	}
+	require.Greater(t.t, p2trOutputIndex, -1)
+
+	return p2trOutputIndex
+}
+
+// parseDerivationPath parses a path in the form of m/x'/y'/z'/a/b into a slice
+// of [x, y, z, a, b], meaning that the apostrophe is ignored and 2^31 is _not_
+// added to the numbers.
+func parseDerivationPath(path string) ([]uint32, error) {
+	path = strings.TrimSpace(path)
+	if len(path) == 0 {
+		return nil, fmt.Errorf("path cannot be empty")
+	}
+	if !strings.HasPrefix(path, "m/") {
+		return nil, fmt.Errorf("path must start with m/")
+	}
+
+	// Just the root key, no path was provided. This is valid but not useful
+	// in most cases.
+	rest := strings.ReplaceAll(path, "m/", "")
+	if rest == "" {
+		return []uint32{}, nil
+	}
+
+	parts := strings.Split(rest, "/")
+	indices := make([]uint32, len(parts))
+	for i := 0; i < len(parts); i++ {
+		part := parts[i]
+		if strings.Contains(parts[i], "'") {
+			part = strings.TrimRight(parts[i], "'")
+		}
+		parsed, err := strconv.ParseInt(part, 10, 32)
+		if err != nil {
+			return nil, fmt.Errorf("could not parse part \"%s\": "+
+				"%v", part, err)
+		}
+		indices[i] = uint32(parsed)
+	}
+	return indices, nil
+}
+
+// acceptChannel is used to accept a single channel that comes across. This
+// should be run in a goroutine and is used to test nodes with the zero-conf
+// feature bit.
+func acceptChannel(t *harnessTest, zeroConf bool,
+	stream lnrpc.Lightning_ChannelAcceptorClient) {
+
+	req, err := stream.Recv()
+	require.NoError(t.t, err)
+
+	resp := &lnrpc.ChannelAcceptResponse{
+		Accept:        true,
+		PendingChanId: req.PendingChanId,
+		ZeroConf:      zeroConf,
+	}
+	err = stream.Send(resp)
+	require.NoError(t.t, err)
 }

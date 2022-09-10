@@ -2,7 +2,6 @@ package chainntnfs
 
 import (
 	"bytes"
-	"io/ioutil"
 	"testing"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
@@ -24,18 +23,14 @@ func initHintCache(t *testing.T) *HeightHintCache {
 func initHintCacheWithConfig(t *testing.T, cfg CacheConfig) *HeightHintCache {
 	t.Helper()
 
-	tempDir, err := ioutil.TempDir("", "kek")
-	if err != nil {
-		t.Fatalf("unable to create temp dir: %v", err)
-	}
-	db, err := channeldb.Open(tempDir)
-	if err != nil {
-		t.Fatalf("unable to create db: %v", err)
-	}
+	db, err := channeldb.Open(t.TempDir())
+	require.NoError(t, err, "unable to create db")
 	hintCache, err := NewHeightHintCache(cfg, db.Backend)
-	if err != nil {
-		t.Fatalf("unable to create hint cache: %v", err)
-	}
+	require.NoError(t, err, "unable to create hint cache")
+
+	t.Cleanup(func() {
+		require.NoError(t, db.Close())
+	})
 
 	return hintCache
 }
@@ -69,9 +64,7 @@ func TestHeightHintCacheConfirms(t *testing.T) {
 	}
 
 	err = hintCache.CommitConfirmHint(height, confRequests...)
-	if err != nil {
-		t.Fatalf("unable to add entries to cache: %v", err)
-	}
+	require.NoError(t, err, "unable to add entries to cache")
 
 	// With the hashes committed, we'll now query the cache to ensure that
 	// we're able to properly retrieve the confirm hints.
@@ -130,9 +123,7 @@ func TestHeightHintCacheSpends(t *testing.T) {
 	}
 
 	err = hintCache.CommitSpendHint(height, spendRequests...)
-	if err != nil {
-		t.Fatalf("unable to add entries to cache: %v", err)
-	}
+	require.NoError(t, err, "unable to add entries to cache")
 
 	// With the outpoints committed, we'll now query the cache to ensure
 	// that we're able to properly retrieve the confirm hints.

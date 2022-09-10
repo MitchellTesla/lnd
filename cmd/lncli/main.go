@@ -5,22 +5,26 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
 
-	"github.com/btcsuite/btcutil"
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/lightningnetwork/lnd/build"
 	"github.com/lightningnetwork/lnd/lncfg"
 	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/lightningnetwork/lnd/macaroons"
+	"github.com/lightningnetwork/lnd/tor"
 	"github.com/urfave/cli"
 	"golang.org/x/term"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/metadata"
 )
 
 const (
@@ -84,28 +88,40 @@ func getClientConn(ctx *cli.Context, skipMacaroons bool) *grpc.ClientConn {
 		fatal(fmt.Errorf("could not load global options: %v", err))
 	}
 
-	// Load the specified TLS certificate.
-	certPool, err := profile.cert()
-	if err != nil {
-		fatal(fmt.Errorf("could not create cert pool: %v", err))
-	}
-
-	// Build transport credentials from the certificate pool. If there is no
-	// certificate pool, we expect the server to use a non-self-signed
-	// certificate such as a certificate obtained from Let's Encrypt.
-	var creds credentials.TransportCredentials
-	if certPool != nil {
-		creds = credentials.NewClientTLSFromCert(certPool, "")
-	} else {
-		// Fallback to the system pool. Using an empty tls config is an
-		// alternative to x509.SystemCertPool(). That call is not
-		// supported on Windows.
-		creds = credentials.NewTLS(&tls.Config{})
-	}
-
 	// Create a dial options array.
 	opts := []grpc.DialOption{
-		grpc.WithTransportCredentials(creds),
+		grpc.WithUnaryInterceptor(
+			addMetadataUnaryInterceptor(profile.Metadata),
+		),
+		grpc.WithStreamInterceptor(
+			addMetaDataStreamInterceptor(profile.Metadata),
+		),
+	}
+
+	if profile.Insecure {
+		opts = append(opts, grpc.WithInsecure())
+	} else {
+		// Load the specified TLS certificate.
+		certPool, err := profile.cert()
+		if err != nil {
+			fatal(fmt.Errorf("could not create cert pool: %v", err))
+		}
+
+		// Build transport credentials from the certificate pool. If
+		// there is no certificate pool, we expect the server to use a
+		// non-self-signed certificate such as a certificate obtained
+		// from Let's Encrypt.
+		var creds credentials.TransportCredentials
+		if certPool != nil {
+			creds = credentials.NewClientTLSFromCert(certPool, "")
+		} else {
+			// Fallback to the system pool. Using an empty tls
+			// config is an alternative to x509.SystemCertPool().
+			// That call is not supported on Windows.
+			creds = credentials.NewTLS(&tls.Config{})
+		}
+
+		opts = append(opts, grpc.WithTransportCredentials(creds))
 	}
 
 	// Only process macaroon credentials if --no-macaroons isn't set and
@@ -138,16 +154,17 @@ func getClientConn(ctx *cli.Context, skipMacaroons bool) *grpc.ClientConn {
 		}
 
 		macConstraints := []macaroons.Constraint{
-			// We add a time-based constraint to prevent replay of the
-			// macaroon. It's good for 60 seconds by default to make up for
-			// any discrepancy between client and server clocks, but leaking
-			// the macaroon before it becomes invalid makes it possible for
-			// an attacker to reuse the macaroon. In addition, the validity
-			// time of the macaroon is extended by the time the server clock
-			// is behind the client clock, or shortened by the time the
+			// We add a time-based constraint to prevent replay of
+			// the macaroon. It's good for 60 seconds by default to
+			// make up for any discrepancy between client and server
+			// clocks, but leaking the macaroon before it becomes
+			// invalid makes it possible for an attacker to reuse
+			// the macaroon. In addition, the validity time of the
+			// macaroon is extended by the time the server clock is
+			// behind the client clock, or shortened by the time the
 			// server clock is ahead of the client clock (or invalid
-			// altogether if, in the latter case, this time is more than 60
-			// seconds).
+			// altogether if, in the latter case, this time is more
+			// than 60 seconds).
 			// TODO(aakselrod): add better anti-replay protection.
 			macaroons.TimeoutConstraint(profile.Macaroons.Timeout),
 
@@ -173,10 +190,26 @@ func getClientConn(ctx *cli.Context, skipMacaroons bool) *grpc.ClientConn {
 		opts = append(opts, grpc.WithPerRPCCredentials(cred))
 	}
 
-	// We need to use a custom dialer so we can also connect to unix sockets
-	// and not just TCP addresses.
-	genericDialer := lncfg.ClientAddressDialer(defaultRPCPort)
-	opts = append(opts, grpc.WithContextDialer(genericDialer))
+	// If a socksproxy server is specified we use a tor dialer
+	// to connect to the grpc server.
+	if ctx.GlobalIsSet("socksproxy") {
+		socksProxy := ctx.GlobalString("socksproxy")
+		torDialer := func(_ context.Context, addr string) (net.Conn,
+			error) {
+
+			return tor.Dial(
+				addr, socksProxy, false, false,
+				tor.DefaultConnTimeout,
+			)
+		}
+		opts = append(opts, grpc.WithContextDialer(torDialer))
+	} else {
+		// We need to use a custom dialer so we can also connect to
+		// unix sockets and not just TCP addresses.
+		genericDialer := lncfg.ClientAddressDialer(defaultRPCPort)
+		opts = append(opts, grpc.WithContextDialer(genericDialer))
+	}
+
 	opts = append(opts, grpc.WithDefaultCallOptions(maxMsgRecvSize))
 
 	conn, err := grpc.Dial(profile.RPCServer, opts...)
@@ -185,6 +218,49 @@ func getClientConn(ctx *cli.Context, skipMacaroons bool) *grpc.ClientConn {
 	}
 
 	return conn
+}
+
+// addMetadataUnaryInterceptor returns a grpc client side interceptor that
+// appends any key-value metadata strings to the outgoing context of a grpc
+// unary call.
+func addMetadataUnaryInterceptor(
+	md map[string]string) grpc.UnaryClientInterceptor {
+
+	return func(ctx context.Context, method string, req, reply interface{},
+		cc *grpc.ClientConn, invoker grpc.UnaryInvoker,
+		opts ...grpc.CallOption) error {
+
+		outCtx := contextWithMetadata(ctx, md)
+		return invoker(outCtx, method, req, reply, cc, opts...)
+	}
+}
+
+// addMetaDataStreamInterceptor returns a grpc client side interceptor that
+// appends any key-value metadata strings to the outgoing context of a grpc
+// stream call.
+func addMetaDataStreamInterceptor(
+	md map[string]string) grpc.StreamClientInterceptor {
+
+	return func(ctx context.Context, desc *grpc.StreamDesc,
+		cc *grpc.ClientConn, method string, streamer grpc.Streamer,
+		opts ...grpc.CallOption) (grpc.ClientStream, error) {
+
+		outCtx := contextWithMetadata(ctx, md)
+		return streamer(outCtx, desc, cc, method, opts...)
+	}
+}
+
+// contextWithMetaData appends the given metadata key-value pairs to the given
+// context.
+func contextWithMetadata(ctx context.Context,
+	md map[string]string) context.Context {
+
+	kvPairs := make([]string, 0, 2*len(md))
+	for k, v := range md {
+		kvPairs = append(kvPairs, k, v)
+	}
+
+	return metadata.AppendToOutgoingContext(ctx, kvPairs...)
 }
 
 // extractPathArgs parses the TLS certificate and macaroon paths from the
@@ -277,6 +353,12 @@ func main() {
 			TakesFile: true,
 		},
 		cli.StringFlag{
+			Name: "socksproxy",
+			Usage: "The host:port of a SOCKS proxy through " +
+				"which all connections to the LN " +
+				"daemon will be established over.",
+		},
+		cli.StringFlag{
 			Name:      "tlscertpath",
 			Value:     defaultTLSCertPath,
 			Usage:     "The path to lnd's TLS certificate.",
@@ -325,6 +407,20 @@ func main() {
 			Usage: "Use this macaroon from the profile's " +
 				"macaroon jar instead of the default one. " +
 				"Can only be used if profiles are defined.",
+		},
+		cli.StringSliceFlag{
+			Name: "metadata",
+			Usage: "This flag can be used to specify a key-value " +
+				"pair that should be appended to the " +
+				"outgoing context before the request is sent " +
+				"to lnd. This flag may be specified multiple " +
+				"times. The format is: \"key:value\".",
+		},
+		cli.BoolFlag{
+			Name: "insecure",
+			Usage: "Connect to the rpc server without TLS " +
+				"authentication",
+			Hidden: true,
 		},
 	}
 	app.Commands = []cli.Command{
@@ -382,6 +478,7 @@ func main() {
 		deleteMacaroonIDCommand,
 		listPermissionsCommand,
 		printMacaroonCommand,
+		constrainMacaroonCommand,
 		trackPaymentCommand,
 		versionCommand,
 		profileSubCommand,
@@ -390,16 +487,19 @@ func main() {
 		sendCustomCommand,
 		subscribeCustomCommand,
 		fishCompletionCommand,
+		listAliasesCommand,
 	}
 
 	// Add any extra commands determined by build flags.
 	app.Commands = append(app.Commands, autopilotCommands()...)
 	app.Commands = append(app.Commands, invoicesCommands()...)
+	app.Commands = append(app.Commands, neutrinoCommands()...)
 	app.Commands = append(app.Commands, routerCommands()...)
 	app.Commands = append(app.Commands, walletCommands()...)
 	app.Commands = append(app.Commands, watchtowerCommands()...)
 	app.Commands = append(app.Commands, wtclientCommands()...)
 	app.Commands = append(app.Commands, devCommands()...)
+	app.Commands = append(app.Commands, peersCommands()...)
 
 	if err := app.Run(os.Args); err != nil {
 		fatal(err)

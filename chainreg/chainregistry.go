@@ -14,9 +14,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/rpcclient"
-	"github.com/btcsuite/btcutil"
 	"github.com/btcsuite/btcwallet/chain"
 	"github.com/lightninglabs/neutrino"
 	"github.com/lightningnetwork/lnd/blockcache"
@@ -399,19 +399,31 @@ func NewPartialChainControl(cfg *Config) (*PartialChainControl, func(), error) {
 			}
 		}
 
-		// Establish the connection to bitcoind and create the clients
-		// required for our relevant subsystems.
-		bitcoindConn, err := chain.NewBitcoindConn(&chain.BitcoindConfig{
+		bitcoindCfg := &chain.BitcoindConfig{
 			ChainParams:        cfg.ActiveNetParams.Params,
 			Host:               bitcoindHost,
 			User:               bitcoindMode.RPCUser,
 			Pass:               bitcoindMode.RPCPass,
-			ZMQBlockHost:       bitcoindMode.ZMQPubRawBlock,
-			ZMQTxHost:          bitcoindMode.ZMQPubRawTx,
-			ZMQReadDeadline:    5 * time.Second,
 			Dialer:             cfg.Dialer,
 			PrunedModeMaxPeers: bitcoindMode.PrunedNodeMaxPeers,
-		})
+		}
+
+		if bitcoindMode.RPCPolling {
+			bitcoindCfg.PollingConfig = &chain.PollingConfig{
+				BlockPollingInterval: bitcoindMode.BlockPollingInterval,
+				TxPollingInterval:    bitcoindMode.TxPollingInterval,
+			}
+		} else {
+			bitcoindCfg.ZMQConfig = &chain.ZMQConfig{
+				ZMQBlockHost:    bitcoindMode.ZMQPubRawBlock,
+				ZMQTxHost:       bitcoindMode.ZMQPubRawTx,
+				ZMQReadDeadline: bitcoindMode.ZMQReadDeadline,
+			}
+		}
+
+		// Establish the connection to bitcoind and create the clients
+		// required for our relevant subsystems.
+		bitcoindConn, err := chain.NewBitcoindConn(bitcoindCfg)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -484,6 +496,14 @@ func NewPartialChainControl(cfg *Config) (*PartialChainControl, func(), error) {
 			return nil, nil, err
 		}
 
+		// Before we continue any further, we'll ensure that the
+		// backend understands Taproot. If not, then all the default
+		// features can't be used.
+		if !backendSupportsTaproot(chainConn) {
+			return nil, nil, fmt.Errorf("node backend does not " +
+				"support taproot")
+		}
+
 		// The api we will use for our health check depends on the
 		// bitcoind version.
 		cmd, ver, err := getBitcoindHealthCheckCmd(chainConn)
@@ -495,7 +515,7 @@ func NewPartialChainControl(cfg *Config) (*PartialChainControl, func(), error) {
 		// version 0.17.0) we make sure lnd subscribes to the correct
 		// zmq events. We do this to avoid a situation in which we are
 		// not notified of new transactions or blocks.
-		if ver >= 170000 {
+		if ver >= 170000 && !bitcoindMode.RPCPolling {
 			zmqPubRawBlockURL, err := url.Parse(bitcoindMode.ZMQPubRawBlock)
 			if err != nil {
 				return nil, nil, err
@@ -530,7 +550,7 @@ func NewPartialChainControl(cfg *Config) (*PartialChainControl, func(), error) {
 						return nil, nil, err
 					}
 					if url.Port() != zmqPubRawBlockURL.Port() {
-						return nil, nil, fmt.Errorf(
+						log.Warnf(
 							"unable to subscribe to zmq block events on "+
 								"%s (bitcoind is running on %s)",
 							zmqPubRawBlockURL.Host,
@@ -545,7 +565,7 @@ func NewPartialChainControl(cfg *Config) (*PartialChainControl, func(), error) {
 						return nil, nil, err
 					}
 					if url.Port() != zmqPubRawTxURL.Port() {
-						return nil, nil, fmt.Errorf(
+						log.Warnf(
 							"unable to subscribe to zmq tx events on "+
 								"%s (bitcoind is running on %s)",
 							zmqPubRawTxURL.Host,
@@ -661,6 +681,21 @@ func NewPartialChainControl(cfg *Config) (*PartialChainControl, func(), error) {
 		)
 		if err != nil {
 			return nil, nil, err
+		}
+
+		// Before we continue any further, we'll ensure that the
+		// backend understands Taproot. If not, then all the default
+		// features can't be used.
+		restConfCopy := *rpcConfig
+		restConfCopy.Endpoint = ""
+		restConfCopy.HTTPPostMode = true
+		chainConn, err := rpcclient.New(&restConfCopy, nil)
+		if err != nil {
+			return nil, nil, err
+		}
+		if !backendSupportsTaproot(chainConn) {
+			return nil, nil, fmt.Errorf("node backend does not " +
+				"support taproot")
 		}
 
 		cc.ChainSource = chainRPC

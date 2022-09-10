@@ -9,10 +9,10 @@ import (
 	"sync"
 
 	"github.com/btcsuite/btcd/blockchain"
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
 	"github.com/davecgh/go-spew/spew"
 	"github.com/lightningnetwork/lnd/chainntnfs"
 	"github.com/lightningnetwork/lnd/channeldb"
@@ -46,11 +46,6 @@ var (
 	// so that if our node restarts at any point during the retribution
 	// procedure, we can recover and continue from the persisted state.
 	retributionBucket = []byte("retribution")
-
-	// justiceTxnBucket holds the finalized justice transactions for all
-	// breached contracts. Entries are added to the justice txn bucket just
-	// before broadcasting the sweep txn.
-	justiceTxnBucket = []byte("justice-txn")
 
 	// errBrarShuttingDown is an error returned if the breacharbiter has
 	// been signalled to exit.
@@ -206,14 +201,13 @@ func NewBreachArbiter(cfg *BreachConfig) *BreachArbiter {
 func (b *BreachArbiter) Start() error {
 	var err error
 	b.started.Do(func() {
+		brarLog.Info("Breach arbiter starting")
 		err = b.start()
 	})
 	return err
 }
 
 func (b *BreachArbiter) start() error {
-	brarLog.Tracef("Starting breach arbiter")
-
 	// Load all retributions currently persisted in the retribution store.
 	var breachRetInfos map[wire.OutPoint]retributionInfo
 	if err := b.cfg.Store.ForAll(func(ret *retributionInfo) error {
@@ -1097,11 +1091,15 @@ func (bo *breachedOutput) SignDesc() *input.SignDescriptor {
 // sign descriptor. The method then returns the witness computed by invoking
 // this function on the first and subsequent calls.
 func (bo *breachedOutput) CraftInputScript(signer input.Signer, txn *wire.MsgTx,
-	hashCache *txscript.TxSigHashes, txinIdx int) (*input.Script, error) {
+	hashCache *txscript.TxSigHashes,
+	prevOutputFetcher txscript.PrevOutputFetcher,
+	txinIdx int) (*input.Script, error) {
 
 	// First, we ensure that the witness generation function has been
 	// initialized for this breached output.
-	bo.witnessFunc = bo.witnessType.WitnessGenerator(signer, bo.SignDesc())
+	signDesc := bo.SignDesc()
+	signDesc.PrevOutputFetcher = prevOutputFetcher
+	bo.witnessFunc = bo.witnessType.WitnessGenerator(signer, signDesc)
 
 	// Now that we have ensured that the witness generation function has
 	// been initialized, we can proceed to execute it and generate the
@@ -1245,7 +1243,7 @@ func newRetributionInfo(chanPoint *wire.OutPoint,
 	}
 
 	return &retributionInfo{
-		commitHash:      breachInfo.BreachTransaction.TxHash(),
+		commitHash:      breachInfo.BreachTxHash,
 		chainHash:       breachInfo.ChainHash,
 		chanPoint:       *chanPoint,
 		breachedOutputs: breachedOutputs,
@@ -1349,9 +1347,9 @@ func (b *BreachArbiter) createSweepTx(inputs []input.Input) (*wire.MsgTx,
 	spendableOutputs = make([]input.Input, 0, len(inputs))
 
 	// The justice transaction we construct will be a segwit transaction
-	// that pays to a p2wkh output. Components such as the version,
+	// that pays to a p2tr output. Components such as the version,
 	// nLockTime, and output are already included in the TxWeightEstimator.
-	weightEstimate.AddP2WKHOutput()
+	weightEstimate.AddP2TROutput()
 
 	// Next, we iterate over the breached outputs contained in the
 	// retribution info.  For each, we switch over the witness type such
@@ -1398,8 +1396,8 @@ func (b *BreachArbiter) sweepSpendableOutputsTxn(txWeight int64,
 
 	// Compute the total amount contained in the inputs.
 	var totalAmt btcutil.Amount
-	for _, input := range inputs {
-		totalAmt += btcutil.Amount(input.SignDesc().Output.Value)
+	for _, inp := range inputs {
+		totalAmt += btcutil.Amount(inp.SignDesc().Output.Value)
 	}
 
 	// We'll actually attempt to target inclusion within the next two
@@ -1425,10 +1423,10 @@ func (b *BreachArbiter) sweepSpendableOutputsTxn(txWeight int64,
 
 	// Next, we add all of the spendable outputs as inputs to the
 	// transaction.
-	for _, input := range inputs {
+	for _, inp := range inputs {
 		txn.AddTxIn(&wire.TxIn{
-			PreviousOutPoint: *input.OutPoint(),
-			Sequence:         input.BlocksToMaturity(),
+			PreviousOutPoint: *inp.OutPoint(),
+			Sequence:         inp.BlocksToMaturity(),
 		})
 	}
 
@@ -1441,7 +1439,11 @@ func (b *BreachArbiter) sweepSpendableOutputsTxn(txWeight int64,
 
 	// Create a sighash cache to improve the performance of hashing and
 	// signing SigHashAll inputs.
-	hashCache := txscript.NewTxSigHashes(txn)
+	prevOutputFetcher, err := input.MultiPrevOutFetcher(inputs)
+	if err != nil {
+		return nil, err
+	}
+	hashCache := txscript.NewTxSigHashes(txn, prevOutputFetcher)
 
 	// Create a closure that encapsulates the process of initializing a
 	// particular output's witness generation function, computing the
@@ -1453,7 +1455,7 @@ func (b *BreachArbiter) sweepSpendableOutputsTxn(txWeight int64,
 		// transaction using the SpendableOutput's witness generation
 		// function.
 		inputScript, err := so.CraftInputScript(
-			b.cfg.Signer, txn, hashCache, idx,
+			b.cfg.Signer, txn, hashCache, prevOutputFetcher, idx,
 		)
 		if err != nil {
 			return err
@@ -1468,8 +1470,8 @@ func (b *BreachArbiter) sweepSpendableOutputsTxn(txWeight int64,
 
 	// Finally, generate a witness for each output and attach it to the
 	// transaction.
-	for i, input := range inputs {
-		if err := addWitness(i, input); err != nil {
+	for i, inp := range inputs {
+		if err := addWitness(i, inp); err != nil {
 			return nil, err
 		}
 	}
@@ -1571,18 +1573,7 @@ func (rs *RetributionStore) Remove(chanPoint *wire.OutPoint) error {
 
 		// Remove the persisted retribution info and finalized justice
 		// transaction.
-		if err := retBucket.Delete(chanBytes); err != nil {
-			return err
-		}
-
-		// If we have not finalized this channel breach, we can exit
-		// early.
-		justiceBkt := tx.ReadWriteBucket(justiceTxnBucket)
-		if justiceBkt == nil {
-			return nil
-		}
-
-		return justiceBkt.Delete(chanBytes)
+		return retBucket.Delete(chanBytes)
 	}, func() {})
 }
 
@@ -1649,7 +1640,7 @@ func (ret *retributionInfo) Encode(w io.Writer) error {
 	return nil
 }
 
-// Dencode deserializes a retribution from the passed byte stream.
+// Decode deserializes a retribution from the passed byte stream.
 func (ret *retributionInfo) Decode(r io.Reader) error {
 	var scratch [32]byte
 

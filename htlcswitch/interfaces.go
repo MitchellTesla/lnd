@@ -52,10 +52,6 @@ type packetHandler interface {
 	//
 	// NOTE: This function should block as little as possible.
 	handleSwitchPacket(*htlcPacket) error
-
-	// handleLocalAddPacket handles a locally-initiated UpdateAddHTLC
-	// packet. It will be processed synchronously.
-	handleLocalAddPacket(*htlcPacket) error
 }
 
 // dustHandler is an interface used exclusively by the Switch to evaluate
@@ -71,6 +67,36 @@ type dustHandler interface {
 	// getDustClosure returns a closure that can evaluate whether a passed
 	// HTLC is dust.
 	getDustClosure() dustClosure
+}
+
+// scidAliasHandler is an interface that the ChannelLink implements so it can
+// properly handle option_scid_alias channels.
+type scidAliasHandler interface {
+	// attachFailAliasUpdate allows the link to properly fail incoming
+	// HTLCs on option_scid_alias channels.
+	attachFailAliasUpdate(failClosure func(
+		sid lnwire.ShortChannelID,
+		incoming bool) *lnwire.ChannelUpdate)
+
+	// getAliases fetches the link's underlying aliases. This is used by
+	// the Switch to determine whether to forward an HTLC and where to
+	// forward an HTLC.
+	getAliases() []lnwire.ShortChannelID
+
+	// isZeroConf returns whether or not the underlying channel is a
+	// zero-conf channel.
+	isZeroConf() bool
+
+	// negotiatedAliasFeature returns whether the option-scid-alias feature
+	// bit was negotiated.
+	negotiatedAliasFeature() bool
+
+	// confirmedScid returns the confirmed SCID for a zero-conf channel.
+	confirmedScid() lnwire.ShortChannelID
+
+	// zeroConfConfirmed returns whether or not the zero-conf channel has
+	// confirmed.
+	zeroConfConfirmed() bool
 }
 
 // ChannelUpdateHandler is an interface that provides methods that allow
@@ -116,20 +142,19 @@ type ChannelUpdateHandler interface {
 // incoming htlc requests, applying the changes to the channel, and also
 // propagating/forwarding it to htlc switch.
 //
-//  abstraction level
-//       ^
-//       |
-//       | - - - - - - - - - - - - Lightning - - - - - - - - - - - - -
-//       |
-//       | (Switch)		     (Switch)		       (Switch)
-//       |  Alice <-- channel link --> Bob <-- channel link --> Carol
-//       |
-//       | - - - - - - - - - - - - - TCP - - - - - - - - - - - - - - -
-//       |
-//       |  (Peer) 		     (Peer)	                (Peer)
-//       |  Alice <----- tcp conn --> Bob <---- tcp conn -----> Carol
-//       |
-//
+//	abstraction level
+//	     ^
+//	     |
+//	     | - - - - - - - - - - - - Lightning - - - - - - - - - - - - -
+//	     |
+//	     | (Switch)		     (Switch)		       (Switch)
+//	     |  Alice <-- channel link --> Bob <-- channel link --> Carol
+//	     |
+//	     | - - - - - - - - - - - - - TCP - - - - - - - - - - - - - - -
+//	     |
+//	     |  (Peer) 		     (Peer)	                (Peer)
+//	     |  Alice <----- tcp conn --> Bob <---- tcp conn -----> Carol
+//	     |
 type ChannelLink interface {
 	// TODO(roasbeef): modify interface to embed mail boxes?
 
@@ -141,6 +166,13 @@ type ChannelLink interface {
 
 	// Embed the dustHandler interface.
 	dustHandler
+
+	// Embed the scidAliasHandler interface.
+	scidAliasHandler
+
+	// IsUnadvertised returns true if the underlying channel is
+	// unadvertised.
+	IsUnadvertised() bool
 
 	// ChannelPoint returns the channel outpoint for the channel link.
 	ChannelPoint() *wire.OutPoint
@@ -169,7 +201,7 @@ type ChannelLink interface {
 	CheckHtlcForward(payHash [32]byte, incomingAmt lnwire.MilliSatoshi,
 		amtToForward lnwire.MilliSatoshi,
 		incomingTimeout, outgoingTimeout uint32,
-		heightNow uint32) *LinkError
+		heightNow uint32, scid lnwire.ShortChannelID) *LinkError
 
 	// CheckHtlcTransit should return a nil error if the passed HTLC details
 	// satisfy the current channel policy.  Otherwise, a LinkError with a
@@ -234,6 +266,9 @@ type TowerClient interface {
 type InterceptableHtlcForwarder interface {
 	// SetInterceptor sets a ForwardInterceptor.
 	SetInterceptor(interceptor ForwardInterceptor)
+
+	// Resolve resolves an intercepted packet.
+	Resolve(res *FwdResolution) error
 }
 
 // ForwardInterceptor is a function that is invoked from the switch for every
@@ -242,7 +277,7 @@ type InterceptableHtlcForwarder interface {
 // to resolve it manually later in case it is held.
 // The return value indicates if this handler will take control of this forward
 // and resolve it later or let the switch execute its default behavior.
-type ForwardInterceptor func(InterceptedForward) bool
+type ForwardInterceptor func(InterceptedPacket) error
 
 // InterceptedPacket contains the relevant information for the interceptor about
 // an htlc.

@@ -15,31 +15,25 @@ import (
 	"io/ioutil"
 	"math/big"
 	"net"
-	"os"
 	"testing"
 	"time"
 
 	"github.com/lightningnetwork/lnd/lncfg"
+	"github.com/stretchr/testify/require"
 )
 
 // TestTLSAutoRegeneration creates an expired TLS certificate, to test that a
 // new TLS certificate pair is regenerated when the old pair expires. This is
 // necessary because the pair expires after a little over a year.
 func TestTLSAutoRegeneration(t *testing.T) {
-	tempDirPath, err := ioutil.TempDir("", ".testLnd")
-	if err != nil {
-		t.Fatalf("couldn't create temporary cert directory")
-	}
-	defer os.RemoveAll(tempDirPath)
+	tempDirPath := t.TempDir()
 
 	certPath := tempDirPath + "/tls.cert"
 	keyPath := tempDirPath + "/tls.key"
 
 	certDerBytes, keyBytes := genExpiredCertPair(t, tempDirPath)
 	expiredCert, err := x509.ParseCertificate(certDerBytes)
-	if err != nil {
-		t.Fatalf("failed to parse certificate: %v", err)
-	}
+	require.NoError(t, err, "failed to parse certificate")
 
 	certBuf := bytes.Buffer{}
 	err = pem.Encode(
@@ -48,9 +42,7 @@ func TestTLSAutoRegeneration(t *testing.T) {
 			Bytes: certDerBytes,
 		},
 	)
-	if err != nil {
-		t.Fatalf("failed to encode certificate: %v", err)
-	}
+	require.NoError(t, err, "failed to encode certificate")
 
 	keyBuf := bytes.Buffer{}
 	err = pem.Encode(
@@ -59,19 +51,13 @@ func TestTLSAutoRegeneration(t *testing.T) {
 			Bytes: keyBytes,
 		},
 	)
-	if err != nil {
-		t.Fatalf("failed to encode private key: %v", err)
-	}
+	require.NoError(t, err, "failed to encode private key")
 
 	// Write cert and key files.
 	err = ioutil.WriteFile(tempDirPath+"/tls.cert", certBuf.Bytes(), 0644)
-	if err != nil {
-		t.Fatalf("failed to write cert file: %v", err)
-	}
+	require.NoError(t, err, "failed to write cert file")
 	err = ioutil.WriteFile(tempDirPath+"/tls.key", keyBuf.Bytes(), 0600)
-	if err != nil {
-		t.Fatalf("failed to write key file: %v", err)
-	}
+	require.NoError(t, err, "failed to write key file")
 
 	rpcListener := net.IPAddr{IP: net.ParseIP("127.0.0.1"), Zone: ""}
 	rpcListeners := make([]net.Addr, 0)
@@ -118,9 +104,7 @@ func genExpiredCertPair(t *testing.T, certDirPath string) ([]byte, []byte) {
 
 	// Generate a serial number that's below the serialNumberLimit.
 	serialNumber, err := rand.Int(rand.Reader, serialNumberLimit)
-	if err != nil {
-		t.Fatalf("failed to generate serial number: %s", err)
-	}
+	require.NoError(t, err, "failed to generate serial number")
 
 	host := "lightning"
 
@@ -157,14 +141,10 @@ func genExpiredCertPair(t *testing.T, certDirPath string) ([]byte, []byte) {
 	certDerBytes, err := x509.CreateCertificate(
 		rand.Reader, &template, &template, &priv.PublicKey, priv,
 	)
-	if err != nil {
-		t.Fatalf("failed to create certificate: %v", err)
-	}
+	require.NoError(t, err, "failed to create certificate")
 
 	keyBytes, err := x509.MarshalECPrivateKey(priv)
-	if err != nil {
-		t.Fatalf("unable to encode privkey: %v", err)
-	}
+	require.NoError(t, err, "unable to encode privkey")
 
 	return certDerBytes, keyBytes
 }

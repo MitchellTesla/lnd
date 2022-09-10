@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/btcsuite/btcd/btcec"
+	"github.com/btcsuite/btcd/btcec/v2"
 	sphinx "github.com/lightningnetwork/lightning-onion"
 	"github.com/lightningnetwork/lnd/lnwire"
 )
@@ -88,9 +88,9 @@ type SphinxErrorEncrypter struct {
 // should be used to deserialize an encoded SphinxErrorEncrypter. Since the
 // actual encrypter is not stored in plaintext while at rest, reconstructing the
 // error encrypter requires:
-//   1) Decode: to deserialize the ephemeral public key.
-//   2) Reextract: to "unlock" the actual error encrypter using an active
-//        OnionProcessor.
+//  1. Decode: to deserialize the ephemeral public key.
+//  2. Reextract: to "unlock" the actual error encrypter using an active
+//     OnionProcessor.
 func NewSphinxErrorEncrypter() *SphinxErrorEncrypter {
 	return &SphinxErrorEncrypter{
 		OnionErrorEncrypter: nil,
@@ -165,7 +165,7 @@ func (s *SphinxErrorEncrypter) Decode(r io.Reader) error {
 	}
 
 	var err error
-	s.EphemeralKey, err = btcec.ParsePubKey(ephemeral[:], btcec.S256())
+	s.EphemeralKey, err = btcec.ParsePubKey(ephemeral[:])
 	if err != nil {
 		return err
 	}

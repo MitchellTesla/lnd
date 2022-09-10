@@ -6,7 +6,7 @@ import (
 	"net"
 	"time"
 
-	"github.com/btcsuite/btcd/btcec"
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightningnetwork/lnd/kvdb"
 )
@@ -29,7 +29,7 @@ var (
 //
 // TODO(roasbeef): also add current OnionKey plus rotation schedule?
 // TODO(roasbeef): add bitfield for supported services
-//  * possibly add a wire.NetAddress type, type
+//   - possibly add a wire.NetAddress type, type
 type LinkNode struct {
 	// Network indicates the Bitcoin network that the LinkNode advertises
 	// for incoming channel creation.
@@ -298,7 +298,7 @@ func deserializeLinkNode(r io.Reader) (*LinkNode, error) {
 	if _, err := io.ReadFull(r, pub[:]); err != nil {
 		return nil, err
 	}
-	node.IdentityPub, err = btcec.ParsePubKey(pub[:], btcec.S256())
+	node.IdentityPub, err = btcec.ParsePubKey(pub[:])
 	if err != nil {
 		return nil, err
 	}

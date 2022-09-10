@@ -7,8 +7,8 @@ import (
 	"testing"
 
 	"github.com/btcsuite/btcd/blockchain"
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
 	"github.com/go-errors/errors"
 	"github.com/lightningnetwork/lnd"
 	"github.com/lightningnetwork/lnd/chainreg"
@@ -25,8 +25,9 @@ import (
 // testCommitmentTransactionDeadline tests that the anchor sweep transaction is
 // taking account of the deadline of the commitment transaction. It tests two
 // scenarios:
-//   1) when the CPFP is skipped, checks that the deadline is not used.
-//   2) when the CPFP is used, checks that the deadline is applied.
+//  1. when the CPFP is skipped, checks that the deadline is not used.
+//  2. when the CPFP is used, checks that the deadline is applied.
+//
 // Note that whether the deadline is used or not is implicitly checked by its
 // corresponding fee rates.
 func testCommitmentTransactionDeadline(net *lntest.NetworkHarness,
@@ -526,7 +527,7 @@ func channelForceClosureTest(net *lntest.NetworkHarness, t *harnessTest,
 		aliceReports[aliceAnchor.OutPoint.String()] = &lnrpc.Resolution{
 			ResolutionType: lnrpc.ResolutionType_ANCHOR,
 			Outcome:        lnrpc.ResolutionOutcome_CLAIMED,
-			SweepTxid:      aliceAnchor.SweepTx,
+			SweepTxid:      aliceAnchor.SweepTx.TxHash().String(),
 			Outpoint: &lnrpc.OutPoint{
 				TxidBytes:   aliceAnchor.OutPoint.Hash[:],
 				TxidStr:     aliceAnchor.OutPoint.Hash.String(),
@@ -632,7 +633,7 @@ func channelForceClosureTest(net *lntest.NetworkHarness, t *harnessTest,
 		carolReports[carolAnchor.OutPoint.String()] = &lnrpc.Resolution{
 			ResolutionType: lnrpc.ResolutionType_ANCHOR,
 			Outcome:        lnrpc.ResolutionOutcome_CLAIMED,
-			SweepTxid:      carolAnchor.SweepTx,
+			SweepTxid:      carolAnchor.SweepTx.TxHash().String(),
 			AmountSat:      anchorSize,
 			Outpoint: &lnrpc.OutPoint{
 				TxidBytes:   carolAnchor.OutPoint.Hash[:],
@@ -770,7 +771,7 @@ func channelForceClosureTest(net *lntest.NetworkHarness, t *harnessTest,
 			OutputIndex: carolCommit.OutPoint.Index,
 		},
 		AmountSat: uint64(pushAmt),
-		SweepTxid: carolCommit.SweepTx,
+		SweepTxid: carolCommit.SweepTx.TxHash().String(),
 	}
 
 	// Check that we can find the commitment sweep in our set of known
@@ -1337,7 +1338,7 @@ func padCLTV(cltv uint32) uint32 {
 
 type sweptOutput struct {
 	OutPoint wire.OutPoint
-	SweepTx  string
+	SweepTx  *wire.MsgTx
 }
 
 // findCommitAndAnchor looks for a commitment sweep and anchor sweep in the
@@ -1364,7 +1365,7 @@ func findCommitAndAnchor(t *harnessTest, net *lntest.NetworkHarness,
 		if len(inputs) == 1 {
 			commitSweep = &sweptOutput{
 				OutPoint: inputs[0].PreviousOutPoint,
-				SweepTx:  txHash.String(),
+				SweepTx:  tx,
 			}
 		} else {
 			// Since we have more than one input, we run through
@@ -1375,7 +1376,7 @@ func findCommitAndAnchor(t *harnessTest, net *lntest.NetworkHarness,
 				if outpointStr == closeTx {
 					anchorSweep = &sweptOutput{
 						OutPoint: txin.PreviousOutPoint,
-						SweepTx:  txHash.String(),
+						SweepTx:  tx,
 					}
 				}
 			}

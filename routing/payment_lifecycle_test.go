@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/btcsuite/btcutil"
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/go-errors/errors"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/clock"
@@ -180,20 +180,15 @@ func TestRouterPaymentStateMachine(t *testing.T) {
 		}, 2),
 	}
 
-	testGraph, err := createTestGraphFromChannels(true, testChannels, "a")
-	if err != nil {
-		t.Fatalf("unable to create graph: %v", err)
-	}
-	defer testGraph.cleanUp()
+	testGraph, err := createTestGraphFromChannels(t, true, testChannels, "a")
+	require.NoError(t, err, "unable to create graph")
 
 	paymentAmt := lnwire.NewMSatFromSatoshis(1000)
 
 	// We create a simple route that we will supply every time the router
 	// requests one.
 	rt, err := createTestRoute(paymentAmt, testGraph.aliasMap)
-	if err != nil {
-		t.Fatalf("unable to create route: %v", err)
-	}
+	require.NoError(t, err, "unable to create route")
 
 	tests := []paymentLifecycleTestCase{
 		{
@@ -477,6 +472,9 @@ func testPaymentLifecycle(t *testing.T, test paymentLifecycleTestCase,
 				return next, nil
 			},
 			Clock: clock.NewTestClock(time.Unix(1, 0)),
+			IsAlias: func(scid lnwire.ShortChannelID) bool {
+				return false
+			},
 		})
 		if err != nil {
 			t.Fatalf("unable to create router %v", err)

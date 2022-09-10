@@ -7,7 +7,7 @@ import (
 	"path"
 	"strings"
 
-	"github.com/btcsuite/btcutil"
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/lightningnetwork/lnd/lncfg"
 	"github.com/urfave/cli"
 	"gopkg.in/macaroon.v2"
@@ -197,6 +197,10 @@ func profileRemove(ctx *cli.Context) error {
 		name = args.First()
 	default:
 		return fmt.Errorf("name argument missing")
+	}
+
+	if len(f.Profiles) == 0 {
+		return fmt.Errorf("there are no existing profiles")
 	}
 
 	// Create a copy of all profiles but don't include the one to delete.

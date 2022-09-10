@@ -5,14 +5,14 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"runtime/pprof"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/btcsuite/btcd/btcec"
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/ecdsa"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/lightningnetwork/lnd/chainntnfs"
@@ -29,6 +29,7 @@ type mockPayload struct {
 	mpp           *record.MPP
 	amp           *record.AMP
 	customRecords record.CustomSet
+	metadata      []byte
 }
 
 func (p *mockPayload) MultiPath() *record.MPP {
@@ -47,6 +48,10 @@ func (p *mockPayload) CustomRecords() record.CustomSet {
 	}
 
 	return p.customRecords
+}
+
+func (p *mockPayload) Metadata() []byte {
+	return p.metadata
 }
 
 const (
@@ -69,10 +74,11 @@ var (
 	testInvoicePaymentHash = testInvoicePreimage.Hash()
 
 	testPrivKeyBytes, _ = hex.DecodeString(
-		"e126f68f7eafcc8b74f54d269fe206be715000f94dac067d1c04a8ca3b2db734")
+		"e126f68f7eafcc8b74f54d269fe206be715000f94dac067d1c04a8ca3b2d" +
+			"b734",
+	)
 
-	testPrivKey, _ = btcec.PrivKeyFromBytes(
-		btcec.S256(), testPrivKeyBytes)
+	testPrivKey, _ = btcec.PrivKeyFromBytes(testPrivKeyBytes)
 
 	testInvoiceDescription = "coffee"
 
@@ -83,9 +89,7 @@ var (
 	testMessageSigner = zpay32.MessageSigner{
 		SignCompact: func(msg []byte) ([]byte, error) {
 			hash := chainhash.HashB(msg)
-			sig, err := btcec.SignCompact(
-				btcec.S256(), testPrivKey, hash, true,
-			)
+			sig, err := ecdsa.SignCompact(testPrivKey, hash, true)
 			if err != nil {
 				return nil, fmt.Errorf("can't sign the message: %v", err)
 			}
@@ -157,29 +161,20 @@ var (
 	}
 )
 
-func newTestChannelDB(clock clock.Clock) (*channeldb.DB, func(), error) {
-	// First, create a temporary directory to be used for the duration of
-	// this test.
-	tempDirName, err := ioutil.TempDir("", "channeldb")
-	if err != nil {
-		return nil, nil, err
-	}
-
-	// Next, create channeldb for the first time.
+func newTestChannelDB(t *testing.T, clock clock.Clock) (*channeldb.DB, error) {
+	// Create channeldb for the first time.
 	cdb, err := channeldb.Open(
-		tempDirName, channeldb.OptionClock(clock),
+		t.TempDir(), channeldb.OptionClock(clock),
 	)
 	if err != nil {
-		os.RemoveAll(tempDirName)
-		return nil, nil, err
+		return nil, err
 	}
 
-	cleanUp := func() {
+	t.Cleanup(func() {
 		cdb.Close()
-		os.RemoveAll(tempDirName)
-	}
+	})
 
-	return cdb, cleanUp, nil
+	return cdb, nil
 }
 
 type testContext struct {
@@ -195,7 +190,7 @@ type testContext struct {
 func newTestContext(t *testing.T) *testContext {
 	clock := clock.NewTestClock(testTime)
 
-	cdb, cleanup, err := newTestChannelDB(clock)
+	cdb, err := newTestChannelDB(t, clock)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,7 +211,6 @@ func newTestContext(t *testing.T) *testContext {
 
 	err = registry.Start()
 	if err != nil {
-		cleanup()
 		t.Fatal(err)
 	}
 
@@ -230,7 +224,6 @@ func newTestContext(t *testing.T) *testContext {
 			if err = registry.Stop(); err != nil {
 				t.Fatalf("failed to stop invoice registry: %v", err)
 			}
-			cleanup()
 		},
 	}
 
@@ -267,15 +260,11 @@ func newTestInvoice(t *testing.T, preimage lntypes.Preimage,
 		zpay32.Expiry(expiry),
 		zpay32.PaymentAddr(payAddr),
 	)
-	if err != nil {
-		t.Fatalf("Error while creating new invoice: %v", err)
-	}
+	require.NoError(t, err, "Error while creating new invoice")
 
 	paymentRequest, err := rawInvoice.Encode(testMessageSigner)
 
-	if err != nil {
-		t.Fatalf("Error while encoding payment request: %v", err)
-	}
+	require.NoError(t, err, "Error while encoding payment request")
 
 	return &channeldb.Invoice{
 		Terms: channeldb.ContractTerm{
@@ -365,7 +354,7 @@ func checkSettleResolution(t *testing.T, res HtlcResolution,
 }
 
 // checkFailResolution asserts the resolution is a fail with the correct reason.
-// If successful, the HtlcFailResolutionis returned in case further checks are
+// If successful, the HtlcFailResolution is returned in case further checks are
 // desired.
 func checkFailResolution(t *testing.T, res HtlcResolution,
 	expOutcome FailResolutionResult) *HtlcFailResolution {

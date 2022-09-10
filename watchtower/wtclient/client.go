@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/btcsuite/btcd/btcec"
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btclog"
 	"github.com/lightningnetwork/lnd/build"
@@ -439,7 +439,7 @@ func (c *TowerClient) buildHighestCommitHeights() {
 func (c *TowerClient) Start() error {
 	var err error
 	c.started.Do(func() {
-		c.log.Infof("Starting watchtower client")
+		c.log.Infof("Watchtower client starting")
 
 		// First, restart a session queue for any sessions that have
 		// committed but unacked state updates. This ensures that these
@@ -603,11 +603,11 @@ func (c *TowerClient) RegisterChannel(chanID lnwire.ChannelID) error {
 
 // BackupState initiates a request to back up a particular revoked state. If the
 // method returns nil, the backup is guaranteed to be successful unless the:
-//  - client is force quit,
-//  - justice transaction would create dust outputs when trying to abide by the
-//    negotiated policy, or
-//  - breached outputs contain too little value to sweep at the target sweep fee
-//    rate.
+//   - client is force quit,
+//   - justice transaction would create dust outputs when trying to abide by the
+//     negotiated policy, or
+//   - breached outputs contain too little value to sweep at the target sweep fee
+//     rate.
 func (c *TowerClient) BackupState(chanID *lnwire.ChannelID,
 	breachInfo *lnwallet.BreachRetribution,
 	chanType channeldb.ChannelType) error {

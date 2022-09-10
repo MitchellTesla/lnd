@@ -10,16 +10,15 @@ import (
 	"io"
 	"io/ioutil"
 	"net"
-	"os"
 	"sort"
 	"testing"
 	"time"
 
-	"github.com/btcsuite/btcd/btcec"
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -60,8 +59,8 @@ type testContext struct {
 
 // newTestContext populates a new testContext struct with the constant
 // parameters defined in the BOLT 03 spec.
-func newTestContext(t *testing.T) (tc *testContext) {
-	tc = new(testContext)
+func newTestContext(t *testing.T) *testContext {
+	tc := new(testContext)
 
 	priv := func(v string) *btcec.PrivateKey {
 		k, err := privkeyFromHex(v)
@@ -269,13 +268,12 @@ func testVectors(t *testing.T, chanType channeldb.ChannelType, test testCase) {
 
 	// Set up a test channel on which the test commitment transaction is
 	// going to be produced.
-	remoteChannel, localChannel, cleanUp := createTestChannelsForVectors(
+	remoteChannel, localChannel := createTestChannelsForVectors(
 		tc,
 		chanType, test.FeePerKw,
 		remoteBalance.ToSatoshis(),
 		localBalance.ToSatoshis(),
 	)
-	defer cleanUp()
 
 	// Add htlcs (if any) to the update logs of both sides and save a hash
 	// map that allows us to identify the htlcs in the scripts later on and
@@ -495,9 +493,7 @@ func testSpendValidation(t *testing.T, tweakless bool) {
 	// doesn't need to exist, as we'll only be validating spending from the
 	// transaction that references this.
 	txid, err := chainhash.NewHash(testHdSeed.CloneBytes())
-	if err != nil {
-		t.Fatalf("unable to create txid: %v", err)
-	}
+	require.NoError(t, err, "unable to create txid")
 	fundingOut := &wire.OutPoint{
 		Hash:  *txid,
 		Index: 50,
@@ -511,15 +507,15 @@ func testSpendValidation(t *testing.T, tweakless bool) {
 	// Each side currently has 1 BTC within the channel, with a total
 	// channel capacity of 2BTC.
 	aliceKeyPriv, aliceKeyPub := btcec.PrivKeyFromBytes(
-		btcec.S256(), testWalletPrivKey,
+		testWalletPrivKey,
 	)
 	bobKeyPriv, bobKeyPub := btcec.PrivKeyFromBytes(
-		btcec.S256(), bobsPrivKey,
+		bobsPrivKey,
 	)
 
 	revocationPreimage := testHdSeed.CloneBytes()
 	commitSecret, commitPoint := btcec.PrivKeyFromBytes(
-		btcec.S256(), revocationPreimage,
+		revocationPreimage,
 	)
 	revokePubKey := input.DeriveRevocationPubkey(bobKeyPub, commitPoint)
 
@@ -585,9 +581,7 @@ func testSpendValidation(t *testing.T, tweakless bool) {
 	// We're testing an uncooperative close, output sweep, so construct a
 	// transaction which sweeps the funds to a random address.
 	targetOutput, err := input.CommitScriptUnencumbered(aliceKeyPub)
-	if err != nil {
-		t.Fatalf("unable to create target output: %v", err)
-	}
+	require.NoError(t, err, "unable to create target output")
 	sweepTx := wire.NewMsgTx(2)
 	sweepTx.AddTxIn(wire.NewTxIn(&wire.OutPoint{
 		Hash:  commitmentTx.TxHash(),
@@ -602,9 +596,7 @@ func testSpendValidation(t *testing.T, tweakless bool) {
 	delayScript, err := input.CommitScriptToSelf(
 		csvTimeout, aliceDelayKey, revokePubKey,
 	)
-	if err != nil {
-		t.Fatalf("unable to generate alice delay script: %v", err)
-	}
+	require.NoError(t, err, "unable to generate alice delay script")
 	sweepTx.TxIn[0].Sequence = input.LockTimeToSequence(false, csvTimeout)
 	signDesc := &input.SignDescriptor{
 		WitnessScript: delayScript,
@@ -612,7 +604,7 @@ func testSpendValidation(t *testing.T, tweakless bool) {
 			PubKey: aliceKeyPub,
 		},
 		SingleTweak: remoteCommitTweak,
-		SigHashes:   txscript.NewTxSigHashes(sweepTx),
+		SigHashes:   input.NewTxSigHashesV0Only(sweepTx),
 		Output: &wire.TxOut{
 			Value: int64(channelBalance),
 		},
@@ -622,16 +614,14 @@ func testSpendValidation(t *testing.T, tweakless bool) {
 	aliceWitnessSpend, err := input.CommitSpendTimeout(
 		aliceSelfOutputSigner, signDesc, sweepTx,
 	)
-	if err != nil {
-		t.Fatalf("unable to generate delay commit spend witness: %v", err)
-	}
+	require.NoError(t, err, "unable to generate delay commit spend witness")
 	sweepTx.TxIn[0].Witness = aliceWitnessSpend
-	vm, err := txscript.NewEngine(delayOutput.PkScript,
-		sweepTx, 0, txscript.StandardVerifyFlags, nil,
-		nil, int64(channelBalance))
-	if err != nil {
-		t.Fatalf("unable to create engine: %v", err)
-	}
+	vm, err := txscript.NewEngine(
+		delayOutput.PkScript, sweepTx, 0, txscript.StandardVerifyFlags,
+		nil, nil, int64(channelBalance),
+		txscript.NewCannedPrevOutputFetcher(nil, 0),
+	)
+	require.NoError(t, err, "unable to create engine")
 	if err := vm.Execute(); err != nil {
 		t.Fatalf("spend from delay output is invalid: %v", err)
 	}
@@ -647,7 +637,7 @@ func testSpendValidation(t *testing.T, tweakless bool) {
 		},
 		DoubleTweak:   commitSecret,
 		WitnessScript: delayScript,
-		SigHashes:     txscript.NewTxSigHashes(sweepTx),
+		SigHashes:     input.NewTxSigHashesV0Only(sweepTx),
 		Output: &wire.TxOut{
 			Value: int64(channelBalance),
 		},
@@ -656,16 +646,14 @@ func testSpendValidation(t *testing.T, tweakless bool) {
 	}
 	bobWitnessSpend, err := input.CommitSpendRevoke(localSigner, signDesc,
 		sweepTx)
-	if err != nil {
-		t.Fatalf("unable to generate revocation witness: %v", err)
-	}
+	require.NoError(t, err, "unable to generate revocation witness")
 	sweepTx.TxIn[0].Witness = bobWitnessSpend
-	vm, err = txscript.NewEngine(delayOutput.PkScript,
-		sweepTx, 0, txscript.StandardVerifyFlags, nil,
-		nil, int64(channelBalance))
-	if err != nil {
-		t.Fatalf("unable to create engine: %v", err)
-	}
+	vm, err = txscript.NewEngine(
+		delayOutput.PkScript, sweepTx, 0, txscript.StandardVerifyFlags,
+		nil, nil, int64(channelBalance),
+		txscript.NewCannedPrevOutputFetcher(nil, 0),
+	)
+	require.NoError(t, err, "unable to create engine")
 	if err := vm.Execute(); err != nil {
 		t.Fatalf("revocation spend is invalid: %v", err)
 	}
@@ -683,15 +671,13 @@ func testSpendValidation(t *testing.T, tweakless bool) {
 	// Finally, we test bob sweeping his output as normal in the case that
 	// Alice broadcasts this commitment transaction.
 	bobScriptP2WKH, err := input.CommitScriptUnencumbered(bobPayKey)
-	if err != nil {
-		t.Fatalf("unable to create bob p2wkh script: %v", err)
-	}
+	require.NoError(t, err, "unable to create bob p2wkh script")
 	signDesc = &input.SignDescriptor{
 		KeyDesc: keychain.KeyDescriptor{
 			PubKey: bobKeyPub,
 		},
 		WitnessScript: bobScriptP2WKH,
-		SigHashes:     txscript.NewTxSigHashes(sweepTx),
+		SigHashes:     input.NewTxSigHashesV0Only(sweepTx),
 		Output: &wire.TxOut{
 			Value:    int64(channelBalance),
 			PkScript: bobScriptP2WKH,
@@ -705,18 +691,15 @@ func testSpendValidation(t *testing.T, tweakless bool) {
 	bobRegularSpend, err := input.CommitSpendNoDelay(
 		localSigner, signDesc, sweepTx, tweakless,
 	)
-	if err != nil {
-		t.Fatalf("unable to create bob regular spend: %v", err)
-	}
+	require.NoError(t, err, "unable to create bob regular spend")
 	sweepTx.TxIn[0].Witness = bobRegularSpend
 	vm, err = txscript.NewEngine(
 		regularOutput.PkScript,
 		sweepTx, 0, txscript.StandardVerifyFlags, nil,
 		nil, int64(channelBalance),
+		txscript.NewCannedPrevOutputFetcher(bobScriptP2WKH, 0),
 	)
-	if err != nil {
-		t.Fatalf("unable to create engine: %v", err)
-	}
+	require.NoError(t, err, "unable to create engine")
 	if err := vm.Execute(); err != nil {
 		t.Fatalf("bob p2wkh spend is invalid: %v", err)
 	}
@@ -726,10 +709,10 @@ func testSpendValidation(t *testing.T, tweakless bool) {
 // the commitment transaction.
 //
 // The following spending cases are covered by this test:
-//   * Alice's spend from the delayed output on her commitment transaction.
-//   * Bob's spend from Alice's delayed output when she broadcasts a revoked
+//   - Alice's spend from the delayed output on her commitment transaction.
+//   - Bob's spend from Alice's delayed output when she broadcasts a revoked
 //     commitment transaction.
-//   * Bob's spend from his unencumbered output within Alice's commitment
+//   - Bob's spend from his unencumbered output within Alice's commitment
 //     transaction.
 func TestCommitmentSpendValidation(t *testing.T) {
 	t.Parallel()
@@ -762,7 +745,7 @@ func (p *mockProducer) Encode(w io.Writer) error {
 // test channel that is used to verify the test vectors.
 func createTestChannelsForVectors(tc *testContext, chanType channeldb.ChannelType,
 	feeRate btcutil.Amount, remoteBalance, localBalance btcutil.Amount) (
-	*LightningChannel, *LightningChannel, func()) {
+	*LightningChannel, *LightningChannel) {
 
 	t := tc.t
 
@@ -783,7 +766,7 @@ func createTestChannelsForVectors(tc *testContext, chanType channeldb.ChannelTyp
 		&remoteDummy1, &remoteDummy2, &localDummy1, &localDummy2,
 	}
 	for _, keyRef := range generateKeys {
-		privkey, err := btcec.NewPrivateKey(btcec.S256())
+		privkey, err := btcec.NewPrivateKey()
 		require.NoError(t, err)
 		*keyRef = privkey
 	}
@@ -861,16 +844,10 @@ func createTestChannelsForVectors(tc *testContext, chanType channeldb.ChannelTyp
 	)
 
 	// Create temporary databases.
-	remotePath, err := ioutil.TempDir("", "remotedb")
+	dbRemote, err := channeldb.Open(t.TempDir())
 	require.NoError(t, err)
 
-	dbRemote, err := channeldb.Open(remotePath)
-	require.NoError(t, err)
-
-	localPath, err := ioutil.TempDir("", "localdb")
-	require.NoError(t, err)
-
-	dbLocal, err := channeldb.Open(localPath)
+	dbLocal, err := channeldb.Open(t.TempDir())
 	require.NoError(t, err)
 
 	// Create the initial commitment transactions for the channel.
@@ -1020,16 +997,13 @@ func createTestChannelsForVectors(tc *testContext, chanType channeldb.ChannelTyp
 
 	// Return a clean up function that stops goroutines and removes the test
 	// databases.
-	cleanUpFunc := func() {
+	t.Cleanup(func() {
 		dbLocal.Close()
 		dbRemote.Close()
 
-		os.RemoveAll(localPath)
-		os.RemoveAll(remotePath)
-
 		require.NoError(t, remotePool.Stop())
 		require.NoError(t, localPool.Stop())
-	}
+	})
 
-	return channelRemote, channelLocal, cleanUpFunc
+	return channelRemote, channelLocal
 }

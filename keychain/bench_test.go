@@ -3,21 +3,15 @@ package keychain
 import (
 	"testing"
 
-	"github.com/btcsuite/btcd/btcec"
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/stretchr/testify/require"
 )
 
 func BenchmarkDerivePrivKey(t *testing.B) {
-	cleanUp, wallet, err := createTestBtcWallet(
-		CoinTypeBitcoin,
-	)
-	if err != nil {
-		t.Fatalf("unable to create wallet: %v", err)
-	}
+	wallet, err := createTestBtcWallet(t, CoinTypeBitcoin)
+	require.NoError(t, err, "unable to create wallet")
 
 	keyRing := NewBtcWalletKeyRing(wallet, CoinTypeBitcoin)
-
-	defer cleanUp()
 
 	var (
 		privKey *btcec.PrivateKey

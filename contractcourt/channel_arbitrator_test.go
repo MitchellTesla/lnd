@@ -3,8 +3,6 @@ package contractcourt
 import (
 	"errors"
 	"fmt"
-	"io/ioutil"
-	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -12,9 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
 	"github.com/lightningnetwork/lnd/chainntnfs"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/clock"
@@ -383,6 +381,7 @@ func createTestChannelArbitrator(t *testing.T, log ArbitratorLog,
 		},
 		MarkChannelClosed: func(*channeldb.ChannelCloseSummary,
 			...channeldb.ChannelStatus) error {
+
 			return nil
 		},
 		IsPendingClose:        false,
@@ -405,11 +404,7 @@ func createTestChannelArbitrator(t *testing.T, log ArbitratorLog,
 
 	var cleanUp func()
 	if log == nil {
-		dbDir, err := ioutil.TempDir("", "chanArb")
-		if err != nil {
-			return nil, err
-		}
-		dbPath := filepath.Join(dbDir, "testdb")
+		dbPath := filepath.Join(t.TempDir(), "testdb")
 		db, err := kvdb.Create(
 			kvdb.BoltBackendName, dbPath, true,
 			kvdb.DefaultDBTimeout,
@@ -426,7 +421,6 @@ func createTestChannelArbitrator(t *testing.T, log ArbitratorLog,
 		}
 		cleanUp = func() {
 			db.Close()
-			os.RemoveAll(dbDir)
 		}
 
 		log = &testArbLog{
@@ -461,9 +455,7 @@ func TestChannelArbitratorCooperativeClose(t *testing.T) {
 	}
 
 	chanArbCtx, err := createTestChannelArbitrator(t, log)
-	if err != nil {
-		t.Fatalf("unable to create ChannelArbitrator: %v", err)
-	}
+	require.NoError(t, err, "unable to create ChannelArbitrator")
 
 	if err := chanArbCtx.chanArb.Start(nil); err != nil {
 		t.Fatalf("unable to start ChannelArbitrator: %v", err)
@@ -522,9 +514,7 @@ func TestChannelArbitratorRemoteForceClose(t *testing.T) {
 	}
 
 	chanArbCtx, err := createTestChannelArbitrator(t, log)
-	if err != nil {
-		t.Fatalf("unable to create ChannelArbitrator: %v", err)
-	}
+	require.NoError(t, err, "unable to create ChannelArbitrator")
 	chanArb := chanArbCtx.chanArb
 
 	if err := chanArb.Start(nil); err != nil {
@@ -577,9 +567,7 @@ func TestChannelArbitratorLocalForceClose(t *testing.T) {
 	}
 
 	chanArbCtx, err := createTestChannelArbitrator(t, log)
-	if err != nil {
-		t.Fatalf("unable to create ChannelArbitrator: %v", err)
-	}
+	require.NoError(t, err, "unable to create ChannelArbitrator")
 	chanArb := chanArbCtx.chanArb
 
 	if err := chanArb.Start(nil); err != nil {
@@ -685,9 +673,7 @@ func TestChannelArbitratorBreachClose(t *testing.T) {
 	}
 
 	chanArbCtx, err := createTestChannelArbitrator(t, log)
-	if err != nil {
-		t.Fatalf("unable to create ChannelArbitrator: %v", err)
-	}
+	require.NoError(t, err, "unable to create ChannelArbitrator")
 	chanArb := chanArbCtx.chanArb
 	chanArb.cfg.PreimageDB = newMockWitnessBeacon()
 	chanArb.cfg.Registry = &mockRegistry{}
@@ -816,9 +802,7 @@ func TestChannelArbitratorLocalForceClosePendingHtlc(t *testing.T) {
 	// a real DB will be created. We need this for our test as we want to
 	// test proper restart recovery and resolver population.
 	chanArbCtx, err := createTestChannelArbitrator(t, nil)
-	if err != nil {
-		t.Fatalf("unable to create ChannelArbitrator: %v", err)
-	}
+	require.NoError(t, err, "unable to create ChannelArbitrator")
 	chanArb := chanArbCtx.chanArb
 	chanArb.cfg.PreimageDB = newMockWitnessBeacon()
 	chanArb.cfg.Registry = &mockRegistry{}
@@ -828,11 +812,7 @@ func TestChannelArbitratorLocalForceClosePendingHtlc(t *testing.T) {
 	}
 	defer chanArb.Stop()
 
-	// Create htlcUpdates channel.
-	htlcUpdates := make(chan *ContractUpdate)
-
 	signals := &ContractSignals{
-		HtlcUpdates: htlcUpdates,
 		ShortChanID: lnwire.ShortChannelID{},
 	}
 	chanArb.UpdateContractSignals(signals)
@@ -863,10 +843,11 @@ func TestChannelArbitratorLocalForceClosePendingHtlc(t *testing.T) {
 		htlc, outgoingDustHtlc, incomingDustHtlc,
 	}
 
-	htlcUpdates <- &ContractUpdate{
+	newUpdate := &ContractUpdate{
 		HtlcKey: LocalHtlcSet,
 		Htlcs:   htlcSet,
 	}
+	chanArb.notifyContractUpdate(newUpdate)
 
 	errChan := make(chan error, 1)
 	respChan := make(chan *wire.MsgTx, 1)
@@ -992,9 +973,7 @@ func TestChannelArbitratorLocalForceClosePendingHtlc(t *testing.T) {
 	// We'll no re-create the resolver, notice that we use the existing
 	// arbLog so it carries over the same on-disk state.
 	chanArbCtxNew, err := chanArbCtx.Restart(nil)
-	if err != nil {
-		t.Fatalf("unable to create ChannelArbitrator: %v", err)
-	}
+	require.NoError(t, err, "unable to create ChannelArbitrator")
 	chanArb = chanArbCtxNew.chanArb
 	defer chanArbCtxNew.CleanUp()
 
@@ -1090,9 +1069,7 @@ func TestChannelArbitratorLocalForceCloseRemoteConfirmed(t *testing.T) {
 	}
 
 	chanArbCtx, err := createTestChannelArbitrator(t, log)
-	if err != nil {
-		t.Fatalf("unable to create ChannelArbitrator: %v", err)
-	}
+	require.NoError(t, err, "unable to create ChannelArbitrator")
 	chanArb := chanArbCtx.chanArb
 
 	if err := chanArb.Start(nil); err != nil {
@@ -1199,9 +1176,7 @@ func TestChannelArbitratorLocalForceDoubleSpend(t *testing.T) {
 	}
 
 	chanArbCtx, err := createTestChannelArbitrator(t, log)
-	if err != nil {
-		t.Fatalf("unable to create ChannelArbitrator: %v", err)
-	}
+	require.NoError(t, err, "unable to create ChannelArbitrator")
 	chanArb := chanArbCtx.chanArb
 
 	if err := chanArb.Start(nil); err != nil {
@@ -1307,9 +1282,7 @@ func TestChannelArbitratorPersistence(t *testing.T) {
 	}
 
 	chanArbCtx, err := createTestChannelArbitrator(t, log)
-	if err != nil {
-		t.Fatalf("unable to create ChannelArbitrator: %v", err)
-	}
+	require.NoError(t, err, "unable to create ChannelArbitrator")
 
 	chanArb := chanArbCtx.chanArb
 	if err := chanArb.Start(nil); err != nil {
@@ -1342,9 +1315,7 @@ func TestChannelArbitratorPersistence(t *testing.T) {
 	// Restart the channel arb, this'll use the same long and prior
 	// context.
 	chanArbCtx, err = chanArbCtx.Restart(nil)
-	if err != nil {
-		t.Fatalf("unable to restart channel arb: %v", err)
-	}
+	require.NoError(t, err, "unable to restart channel arb")
 	chanArb = chanArbCtx.chanArb
 
 	// Again, it should start up in the default state.
@@ -1373,9 +1344,7 @@ func TestChannelArbitratorPersistence(t *testing.T) {
 
 	// Restart once again to simulate yet another restart.
 	chanArbCtx, err = chanArbCtx.Restart(nil)
-	if err != nil {
-		t.Fatalf("unable to restart channel arb: %v", err)
-	}
+	require.NoError(t, err, "unable to restart channel arb")
 	chanArb = chanArbCtx.chanArb
 
 	// Starts out in StateDefault.
@@ -1402,9 +1371,7 @@ func TestChannelArbitratorPersistence(t *testing.T) {
 	// Create a new arbitrator, and now make fetching resolutions succeed.
 	log.failFetch = nil
 	chanArbCtx, err = chanArbCtx.Restart(nil)
-	if err != nil {
-		t.Fatalf("unable to restart channel arb: %v", err)
-	}
+	require.NoError(t, err, "unable to restart channel arb")
 	defer chanArbCtx.CleanUp()
 
 	// Finally it should advance to StateFullyResolved.
@@ -1433,9 +1400,7 @@ func TestChannelArbitratorForceCloseBreachedChannel(t *testing.T) {
 	}
 
 	chanArbCtx, err := createTestChannelArbitrator(t, log)
-	if err != nil {
-		t.Fatalf("unable to create ChannelArbitrator: %v", err)
-	}
+	require.NoError(t, err, "unable to create ChannelArbitrator")
 
 	chanArb := chanArbCtx.chanArb
 	if err := chanArb.Start(nil); err != nil {
@@ -1517,9 +1482,7 @@ func TestChannelArbitratorForceCloseBreachedChannel(t *testing.T) {
 		c.chanArb.cfg.ClosingHeight = 100
 		c.chanArb.cfg.CloseType = channeldb.BreachClose
 	})
-	if err != nil {
-		t.Fatalf("unable to create ChannelArbitrator: %v", err)
-	}
+	require.NoError(t, err, "unable to create ChannelArbitrator")
 	defer chanArbCtx.CleanUp()
 
 	// We should transition to StateContractClosed.
@@ -1635,6 +1598,7 @@ func TestChannelArbitratorCommitFailure(t *testing.T) {
 		chanArb.cfg.MarkChannelClosed = func(
 			*channeldb.ChannelCloseSummary,
 			...channeldb.ChannelStatus) error {
+
 			close(closed)
 			return nil
 		}
@@ -1700,9 +1664,7 @@ func TestChannelArbitratorEmptyResolutions(t *testing.T) {
 	}
 
 	chanArbCtx, err := createTestChannelArbitrator(t, log)
-	if err != nil {
-		t.Fatalf("unable to create ChannelArbitrator: %v", err)
-	}
+	require.NoError(t, err, "unable to create ChannelArbitrator")
 
 	chanArb := chanArbCtx.chanArb
 	chanArb.cfg.IsPendingClose = true
@@ -1737,9 +1699,7 @@ func TestChannelArbitratorAlreadyForceClosed(t *testing.T) {
 		state: StateCommitmentBroadcasted,
 	}
 	chanArbCtx, err := createTestChannelArbitrator(t, log)
-	if err != nil {
-		t.Fatalf("unable to create ChannelArbitrator: %v", err)
-	}
+	require.NoError(t, err, "unable to create ChannelArbitrator")
 	chanArb := chanArbCtx.chanArb
 	if err := chanArb.Start(nil); err != nil {
 		t.Fatalf("unable to start ChannelArbitrator: %v", err)
@@ -1847,9 +1807,7 @@ func TestChannelArbitratorDanglingCommitForceClose(t *testing.T) {
 			// Now that our channel arb has started, we'll set up
 			// its contract signals channel so we can send it
 			// various HTLC updates for this test.
-			htlcUpdates := make(chan *ContractUpdate)
 			signals := &ContractSignals{
-				HtlcUpdates: htlcUpdates,
 				ShortChanID: lnwire.ShortChannelID{},
 			}
 			chanArb.UpdateContractSignals(signals)
@@ -1870,10 +1828,11 @@ func TestChannelArbitratorDanglingCommitForceClose(t *testing.T) {
 				HtlcIndex:     htlcIndex,
 				RefundTimeout: htlcExpiry,
 			}
-			htlcUpdates <- &ContractUpdate{
+			newUpdate := &ContractUpdate{
 				HtlcKey: htlcKey,
 				Htlcs:   []channeldb.HTLC{danglingHTLC},
 			}
+			chanArb.notifyContractUpdate(newUpdate)
 
 			// At this point, we now have a split commitment state
 			// from the PoV of the channel arb. There's now an HTLC
@@ -2011,9 +1970,7 @@ func TestChannelArbitratorPendingExpiredHTLC(t *testing.T) {
 		resolvers: make(map[ContractResolver]struct{}),
 	}
 	chanArbCtx, err := createTestChannelArbitrator(t, log)
-	if err != nil {
-		t.Fatalf("unable to create ChannelArbitrator: %v", err)
-	}
+	require.NoError(t, err, "unable to create ChannelArbitrator")
 	chanArb := chanArbCtx.chanArb
 
 	// We'll inject a test clock implementation so we can control the uptime.
@@ -2042,9 +1999,7 @@ func TestChannelArbitratorPendingExpiredHTLC(t *testing.T) {
 	// Now that our channel arb has started, we'll set up
 	// its contract signals channel so we can send it
 	// various HTLC updates for this test.
-	htlcUpdates := make(chan *ContractUpdate)
 	signals := &ContractSignals{
-		HtlcUpdates: htlcUpdates,
 		ShortChanID: lnwire.ShortChannelID{},
 	}
 	chanArb.UpdateContractSignals(signals)
@@ -2059,10 +2014,11 @@ func TestChannelArbitratorPendingExpiredHTLC(t *testing.T) {
 		HtlcIndex:     htlcIndex,
 		RefundTimeout: htlcExpiry,
 	}
-	htlcUpdates <- &ContractUpdate{
+	newUpdate := &ContractUpdate{
 		HtlcKey: RemoteHtlcSet,
 		Htlcs:   []channeldb.HTLC{pendingHTLC},
 	}
+	chanArb.notifyContractUpdate(newUpdate)
 
 	// We will advance the uptime to 10 seconds which should be still within
 	// the grace period and should not trigger going to chain.
@@ -2169,6 +2125,7 @@ func TestRemoteCloseInitiator(t *testing.T) {
 			// about setting of channel status.
 			mockMarkClosed := func(_ *channeldb.ChannelCloseSummary,
 				statuses ...channeldb.ChannelStatus) error {
+
 				for _, status := range statuses {
 					err := alice.State().ApplyChanStatus(status)
 					if err != nil {
@@ -2407,6 +2364,14 @@ func TestSweepAnchors(t *testing.T) {
 			htlcDust.HtlcIndex: htlcDust,
 		},
 	}
+	chanArb.unmergedSet[LocalHtlcSet] = htlcSet{
+		incomingHTLCs: map[uint64]channeldb.HTLC{
+			htlcWithPreimage.HtlcIndex: htlcWithPreimage,
+		},
+		outgoingHTLCs: map[uint64]channeldb.HTLC{
+			htlcDust.HtlcIndex: htlcDust,
+		},
+	}
 
 	// Setup our remote HTLC set such that no valid HTLCs can be used, thus
 	// we default to anchorSweepConfTarget.
@@ -2419,11 +2384,27 @@ func TestSweepAnchors(t *testing.T) {
 			htlcDust.HtlcIndex: htlcDust,
 		},
 	}
+	chanArb.unmergedSet[RemoteHtlcSet] = htlcSet{
+		incomingHTLCs: map[uint64]channeldb.HTLC{
+			htlcSmallExipry.HtlcIndex: htlcSmallExipry,
+		},
+		outgoingHTLCs: map[uint64]channeldb.HTLC{
+			htlcDust.HtlcIndex: htlcDust,
+		},
+	}
 
 	// Setup out pending remote HTLC set such that we will use the HTLC's
 	// CLTV from the outgoing HTLC set.
 	expectedPendingDeadline := htlcSmallExipry.RefundTimeout - heightHint
 	chanArb.activeHTLCs[RemotePendingHtlcSet] = htlcSet{
+		incomingHTLCs: map[uint64]channeldb.HTLC{
+			htlcDust.HtlcIndex: htlcDust,
+		},
+		outgoingHTLCs: map[uint64]channeldb.HTLC{
+			htlcSmallExipry.HtlcIndex: htlcSmallExipry,
+		},
+	}
+	chanArb.unmergedSet[RemotePendingHtlcSet] = htlcSet{
 		incomingHTLCs: map[uint64]channeldb.HTLC{
 			htlcDust.HtlcIndex: htlcDust,
 		},
@@ -2482,9 +2463,7 @@ func TestChannelArbitratorAnchors(t *testing.T) {
 	}
 
 	chanArbCtx, err := createTestChannelArbitrator(t, log)
-	if err != nil {
-		t.Fatalf("unable to create ChannelArbitrator: %v", err)
-	}
+	require.NoError(t, err, "unable to create ChannelArbitrator")
 
 	// Replace our mocked put report function with one which will push
 	// reports into a channel for us to consume. We update this function
@@ -2528,11 +2507,7 @@ func TestChannelArbitratorAnchors(t *testing.T) {
 		}
 	}()
 
-	// Create htlcUpdates channel.
-	htlcUpdates := make(chan *ContractUpdate)
-
 	signals := &ContractSignals{
-		HtlcUpdates: htlcUpdates,
 		ShortChanID: lnwire.ShortChannelID{},
 	}
 	chanArb.UpdateContractSignals(signals)
@@ -2556,7 +2531,7 @@ func TestChannelArbitratorAnchors(t *testing.T) {
 
 	// We now send two HTLC updates, one for local HTLC set and the other
 	// for remote HTLC set.
-	htlcUpdates <- &ContractUpdate{
+	newUpdate := &ContractUpdate{
 		HtlcKey: LocalHtlcSet,
 		// This will make the deadline of the local anchor resolution
 		// to be htlcWithPreimage's CLTV minus heightHint since the
@@ -2564,13 +2539,16 @@ func TestChannelArbitratorAnchors(t *testing.T) {
 		// preimage available.
 		Htlcs: []channeldb.HTLC{htlc, htlcWithPreimage},
 	}
-	htlcUpdates <- &ContractUpdate{
+	chanArb.notifyContractUpdate(newUpdate)
+
+	newUpdate = &ContractUpdate{
 		HtlcKey: RemoteHtlcSet,
 		// This will make the deadline of the remote anchor resolution
 		// to be htlcWithPreimage's CLTV minus heightHint because the
 		// incoming HTLC (toRemoteHTLCs) has a lower CLTV.
 		Htlcs: []channeldb.HTLC{htlc, htlcWithPreimage},
 	}
+	chanArb.notifyContractUpdate(newUpdate)
 
 	errChan := make(chan error, 1)
 	respChan := make(chan *wire.MsgTx, 1)

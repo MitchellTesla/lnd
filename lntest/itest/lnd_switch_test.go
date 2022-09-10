@@ -4,11 +4,12 @@ import (
 	"context"
 	"time"
 
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
 	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/lightningnetwork/lnd/lntest"
 	"github.com/lightningnetwork/lnd/lntest/wait"
+	"github.com/stretchr/testify/require"
 )
 
 // testSwitchCircuitPersistence creates a multihop network to ensure the sender
@@ -17,9 +18,9 @@ import (
 // forward a response back from the receiver once back online.
 //
 // The general flow of this test:
-//   1. Carol --> Dave --> Alice --> Bob  forward payment
-//   2.        X        X         X  Bob  restart sender and intermediaries
-//   3. Carol <-- Dave <-- Alice <-- Bob  expect settle to propagate
+//  1. Carol --> Dave --> Alice --> Bob  forward payment
+//  2. X        X         X  Bob  restart sender and intermediaries
+//  3. Carol <-- Dave <-- Alice <-- Bob  expect settle to propagate
 func testSwitchCircuitPersistence(net *lntest.NetworkHarness, t *harnessTest) {
 	ctxb := context.Background()
 
@@ -290,10 +291,10 @@ func testSwitchCircuitPersistence(net *lntest.NetworkHarness, t *harnessTest) {
 // online.
 //
 // The general flow of this test:
-//   1. Carol --> Dave --> Alice --> Bob  forward payment
-//   2. Carol --- Dave  X  Alice --- Bob  disconnect intermediaries
-//   3. Carol --- Dave  X  Alice <-- Bob  settle last hop
-//   4. Carol <-- Dave <-- Alice --- Bob  reconnect, expect settle to propagate
+//  1. Carol --> Dave --> Alice --> Bob  forward payment
+//  2. Carol --- Dave  X  Alice --- Bob  disconnect intermediaries
+//  3. Carol --- Dave  X  Alice <-- Bob  settle last hop
+//  4. Carol <-- Dave <-- Alice --- Bob  reconnect, expect settle to propagate
 func testSwitchOfflineDelivery(net *lntest.NetworkHarness, t *harnessTest) {
 	ctxb := context.Background()
 
@@ -451,13 +452,23 @@ func testSwitchOfflineDelivery(net *lntest.NetworkHarness, t *harnessTest) {
 		t.Fatalf("htlc mismatch: %v", predErr)
 	}
 
+	peerReq := &lnrpc.PeerEventSubscription{}
+	peerClient, err := dave.SubscribePeerEvents(ctxb, peerReq)
+	require.NoError(t.t, err)
+
 	// First, disconnect Dave and Alice so that their link is broken.
 	if err := net.DisconnectNodes(dave, net.Alice); err != nil {
 		t.Fatalf("unable to disconnect alice from dave: %v", err)
 	}
 
+	// Wait to receive the PEER_OFFLINE event before reconnecting them.
+	peerEvent, err := peerClient.Recv()
+	require.NoError(t.t, err)
+	require.Equal(t.t, lnrpc.PeerEvent_PEER_OFFLINE, peerEvent.GetType())
+
 	// Then, reconnect them to ensure Dave doesn't just fail back the htlc.
-	net.ConnectNodes(t.t, dave, net.Alice)
+	// We use EnsureConnected here in case they have already re-connected.
+	net.EnsureConnected(t.t, dave, net.Alice)
 
 	// Wait to ensure that the payment remain are not failed back after
 	// reconnecting. All node should report the number payments initiated
@@ -475,6 +486,16 @@ func testSwitchOfflineDelivery(net *lntest.NetworkHarness, t *harnessTest) {
 	if err := net.DisconnectNodes(dave, net.Alice); err != nil {
 		t.Fatalf("unable to disconnect alice from dave: %v", err)
 	}
+
+	// Wait to receive the PEER_ONLINE and then the PEER_OFFLINE event
+	// before advancing.
+	peerEvent2, err := peerClient.Recv()
+	require.NoError(t.t, err)
+	require.Equal(t.t, lnrpc.PeerEvent_PEER_ONLINE, peerEvent2.GetType())
+
+	peerEvent3, err := peerClient.Recv()
+	require.NoError(t.t, err)
+	require.Equal(t.t, lnrpc.PeerEvent_PEER_OFFLINE, peerEvent3.GetType())
 
 	// Now restart carol without hodl mode, to settle back the outstanding
 	// payments.
@@ -587,11 +608,11 @@ func testSwitchOfflineDelivery(net *lntest.NetworkHarness, t *harnessTest) {
 // disk, and transmitted as soon as the intermediaries are reconnected.
 //
 // The general flow of this test:
-//   1. Carol --> Dave --> Alice --> Bob  forward payment
-//   2. Carol --- Dave  X  Alice --- Bob  disconnect intermediaries
-//   3. Carol --- Dave  X  Alice <-- Bob  settle last hop
-//   4. Carol --- Dave  X         X  Bob  restart Alice
-//   5. Carol <-- Dave <-- Alice --- Bob  expect settle to propagate
+//  1. Carol --> Dave --> Alice --> Bob  forward payment
+//  2. Carol --- Dave  X  Alice --- Bob  disconnect intermediaries
+//  3. Carol --- Dave  X  Alice <-- Bob  settle last hop
+//  4. Carol --- Dave  X         X  Bob  restart Alice
+//  5. Carol <-- Dave <-- Alice --- Bob  expect settle to propagate
 func testSwitchOfflineDeliveryPersistence(net *lntest.NetworkHarness, t *harnessTest) {
 	ctxb := context.Background()
 
@@ -874,11 +895,11 @@ func testSwitchOfflineDeliveryPersistence(net *lntest.NetworkHarness, t *harness
 // disk, and transmitted as soon as the intermediaries are reconnected.
 //
 // The general flow of this test:
-//   1. Carol --> Dave --> Alice --> Bob  forward payment
-//   2. Carol --- Dave  X  Alice --- Bob  disconnect intermediaries
-//   3. Carol --- Dave  X  Alice <-- Bob  settle last hop
-//   4. Carol --- Dave  X         X       shutdown Bob, restart Alice
-//   5. Carol <-- Dave <-- Alice  X       expect settle to propagate
+//  1. Carol --> Dave --> Alice --> Bob  forward payment
+//  2. Carol --- Dave  X  Alice --- Bob  disconnect intermediaries
+//  3. Carol --- Dave  X  Alice <-- Bob  settle last hop
+//  4. Carol --- Dave  X         X       shutdown Bob, restart Alice
+//  5. Carol <-- Dave <-- Alice  X       expect settle to propagate
 func testSwitchOfflineDeliveryOutgoingOffline(
 	net *lntest.NetworkHarness, t *harnessTest) {
 

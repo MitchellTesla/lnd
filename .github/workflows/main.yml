@@ -8,6 +8,11 @@ on:
     branches:
       - "*"
 
+concurrency:
+  # Cancel any previous workflows if they are from a PR or push.
+  group: ${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 defaults:
   run:
     shell: bash
@@ -16,7 +21,7 @@ env:
   # go needs absolute directories, using the $HOME variable doesn't work here.
   GOCACHE: /home/runner/work/go/pkg/build
   GOPATH: /home/runner/work/go
-  BITCOIN_VERSION: "22.0"
+  BITCOIN_VERSION: "23.0"
 
   # If you change this value, please change it in the following files as well:
   # /.travis.yml
@@ -24,9 +29,27 @@ env:
   # /dev.Dockerfile
   # /make/builder.Dockerfile
   # /.github/workflows/release.yml
-  GO_VERSION: 1.17.3
+  GO_VERSION: 1.19.0
 
 jobs:
+  ########################
+  # format code
+  ########################
+  fmt-check:
+    name: check code format
+    runs-on: ubuntu-latest
+    steps:
+      - name: git checkout
+        uses: actions/checkout@v3
+
+      - name: setup go ${{ env.GO_VERSION }}
+        uses: actions/setup-go@v3
+        with:
+          go-version: '${{ env.GO_VERSION }}'
+
+      - name: fmt
+        run: make fmt-check
+
   ########################
   # RPC and mobile compilation check
   ########################
@@ -103,34 +126,6 @@ jobs:
 
       - name: check commits
         run: scripts/check-each-commit.sh upstream/master
-
-  ########################
-  # check submodules
-  ########################
-  check-submodules:
-    name: check submodules
-    runs-on: ubuntu-latest
-    steps:
-      - name: git checkout
-        uses: actions/checkout@v2
-        with:
-          fetch-depth: 0
-
-      - name: setup go ${{ env.GO_VERSION }}
-        uses: actions/setup-go@v2
-        with:
-          go-version: '${{ env.GO_VERSION }}'
-
-      - name: fetch and rebase on master
-        run: |
-          git remote add upstream https://github.com/lightningnetwork/lnd
-          git fetch upstream
-          export GIT_COMMITTER_EMAIL="lnd-ci@example.com"
-          export GIT_COMMITTER_NAME="LND CI"
-          git rebase upstream/master
-
-      - name: check submodules
-        run: scripts/check-submodule-version.sh upstream/master
 
   ########################
   # lint code
@@ -287,6 +282,8 @@ jobs:
             args: backend=bitcoind
           - name: bitcoind-notxindex
             args: backend="bitcoind notxindex"
+          - name: bitcoind-rpcpolling
+            args: backend="bitcoind rpcpolling"
           - name: bitcoind-etcd
             args: backend=bitcoind dbbackend=etcd
           - name: bitcoind-postgres

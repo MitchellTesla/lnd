@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/btcsuite/btcd/btcec"
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -60,7 +60,8 @@ type ChanStatusConfig struct {
 	// ApplyChannelUpdate processes new ChannelUpdates signed by our node by
 	// updating our local routing table and broadcasting the update to our
 	// peers.
-	ApplyChannelUpdate func(*lnwire.ChannelUpdate) error
+	ApplyChannelUpdate func(*lnwire.ChannelUpdate, *wire.OutPoint,
+		bool) error
 
 	// DB stores the set of channels that are to be monitored.
 	DB DB
@@ -132,7 +133,8 @@ type ChanStatusManager struct {
 // NewChanStatusManager initializes a new ChanStatusManager using the given
 // configuration. An error is returned if the timeouts and sample interval fail
 // to meet do not satisfy the equation:
-//   ChanEnableTimeout + ChanStatusSampleInterval > ChanDisableTimeout.
+//
+//	ChanEnableTimeout + ChanStatusSampleInterval > ChanDisableTimeout.
 func NewChanStatusManager(cfg *ChanStatusConfig) (*ChanStatusManager, error) {
 	// Assert that the config timeouts are properly formed. We require the
 	// enable_timeout + sample_interval to be less than or equal to the
@@ -172,6 +174,7 @@ func NewChanStatusManager(cfg *ChanStatusConfig) (*ChanStatusManager, error) {
 func (m *ChanStatusManager) Start() error {
 	var err error
 	m.started.Do(func() {
+		log.Info("Channel Status Manager starting")
 		err = m.start()
 	})
 	return err
@@ -258,16 +261,17 @@ func (m *ChanStatusManager) RequestEnable(outpoint wire.OutPoint,
 // ChanStatusManuallyDisabled, depending on the passed-in value of manual. In
 // particular, note the following state transitions:
 //
-//     current state    | manual | new state
-//     ---------------------------------------------------
-//     Disabled         | false  | Disabled
-//     ManuallyDisabled | false  | ManuallyDisabled (*)
-//     Disabled         | true   | ManuallyDisabled
-//     ManuallyDisabled | true   | ManuallyDisabled
+//	current state    | manual | new state
+//	---------------------------------------------------
+//	Disabled         | false  | Disabled
+//	ManuallyDisabled | false  | ManuallyDisabled (*)
+//	Disabled         | true   | ManuallyDisabled
+//	ManuallyDisabled | true   | ManuallyDisabled
 //
 // (*) If a channel was manually disabled, subsequent automatic / background
-//     requests to disable the channel do not change the fact that the channel
-//     was manually disabled.
+//
+//	requests to disable the channel do not change the fact that the channel
+//	was manually disabled.
 func (m *ChanStatusManager) RequestDisable(outpoint wire.OutPoint,
 	manual bool) error {
 
@@ -365,13 +369,13 @@ func (m *ChanStatusManager) statusManager() {
 
 // processEnableRequest attempts to enable the given outpoint.
 //
-// * If the channel is not active at the time of the request,
-//   ErrEnableInactiveChan will be returned.
-// * If the channel was in the ManuallyDisabled state and manual = false,
-//   the request will be ignored and ErrEnableManuallyDisabledChan will be
-//   returned.
-// * Otherwise, the status of the channel in chanStates will be
-//   ChanStatusEnabled and the method will return nil.
+//   - If the channel is not active at the time of the request,
+//     ErrEnableInactiveChan will be returned.
+//   - If the channel was in the ManuallyDisabled state and manual = false,
+//     the request will be ignored and ErrEnableManuallyDisabledChan will be
+//     returned.
+//   - Otherwise, the status of the channel in chanStates will be
+//     ChanStatusEnabled and the method will return nil.
 //
 // An update will be broadcast only if the channel is currently disabled,
 // otherwise no update will be sent on the network.
@@ -620,7 +624,7 @@ func (m *ChanStatusManager) signAndSendNextUpdate(outpoint wire.OutPoint,
 
 	// Retrieve the latest update for this channel. We'll use this
 	// as our starting point to send the new update.
-	chanUpdate, err := m.fetchLastChanUpdateByOutPoint(outpoint)
+	chanUpdate, private, err := m.fetchLastChanUpdateByOutPoint(outpoint)
 	if err != nil {
 		return err
 	}
@@ -633,22 +637,26 @@ func (m *ChanStatusManager) signAndSendNextUpdate(outpoint wire.OutPoint,
 		return err
 	}
 
-	return m.cfg.ApplyChannelUpdate(chanUpdate)
+	return m.cfg.ApplyChannelUpdate(chanUpdate, &outpoint, private)
 }
 
 // fetchLastChanUpdateByOutPoint fetches the latest policy for our direction of
 // a channel, and crafts a new ChannelUpdate with this policy. Returns an error
-// in case our ChannelEdgePolicy is not found in the database.
+// in case our ChannelEdgePolicy is not found in the database. Also returns if
+// the channel is private by checking AuthProof for nil.
 func (m *ChanStatusManager) fetchLastChanUpdateByOutPoint(op wire.OutPoint) (
-	*lnwire.ChannelUpdate, error) {
+	*lnwire.ChannelUpdate, bool, error) {
 
 	// Get the edge info and policies for this channel from the graph.
 	info, edge1, edge2, err := m.cfg.Graph.FetchChannelEdgesByOutpoint(&op)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
-	return ExtractChannelUpdate(m.ourPubKeyBytes, info, edge1, edge2)
+	update, err := ExtractChannelUpdate(
+		m.ourPubKeyBytes, info, edge1, edge2,
+	)
+	return update, info.AuthProof == nil, err
 }
 
 // loadInitialChanState determines the initial ChannelState for a particular
@@ -659,7 +667,7 @@ func (m *ChanStatusManager) fetchLastChanUpdateByOutPoint(op wire.OutPoint) (
 func (m *ChanStatusManager) loadInitialChanState(
 	outpoint *wire.OutPoint) (ChannelState, error) {
 
-	lastUpdate, err := m.fetchLastChanUpdateByOutPoint(*outpoint)
+	lastUpdate, _, err := m.fetchLastChanUpdateByOutPoint(*outpoint)
 	if err != nil {
 		return ChannelState{}, err
 	}

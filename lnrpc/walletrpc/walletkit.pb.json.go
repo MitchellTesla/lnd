@@ -224,6 +224,56 @@ func RegisterWalletKitJSONCallbacks(registry map[string]func(ctx context.Context
 		callback(string(respBytes), nil)
 	}
 
+	registry["walletrpc.WalletKit.RequiredReserve"] = func(ctx context.Context,
+		conn *grpc.ClientConn, reqJSON string, callback func(string, error)) {
+
+		req := &RequiredReserveRequest{}
+		err := marshaler.Unmarshal([]byte(reqJSON), req)
+		if err != nil {
+			callback("", err)
+			return
+		}
+
+		client := NewWalletKitClient(conn)
+		resp, err := client.RequiredReserve(ctx, req)
+		if err != nil {
+			callback("", err)
+			return
+		}
+
+		respBytes, err := marshaler.Marshal(resp)
+		if err != nil {
+			callback("", err)
+			return
+		}
+		callback(string(respBytes), nil)
+	}
+
+	registry["walletrpc.WalletKit.ListAddresses"] = func(ctx context.Context,
+		conn *grpc.ClientConn, reqJSON string, callback func(string, error)) {
+
+		req := &ListAddressesRequest{}
+		err := marshaler.Unmarshal([]byte(reqJSON), req)
+		if err != nil {
+			callback("", err)
+			return
+		}
+
+		client := NewWalletKitClient(conn)
+		resp, err := client.ListAddresses(ctx, req)
+		if err != nil {
+			callback("", err)
+			return
+		}
+
+		respBytes, err := marshaler.Marshal(resp)
+		if err != nil {
+			callback("", err)
+			return
+		}
+		callback(string(respBytes), nil)
+	}
+
 	registry["walletrpc.WalletKit.ImportAccount"] = func(ctx context.Context,
 		conn *grpc.ClientConn, reqJSON string, callback func(string, error)) {
 
@@ -261,6 +311,31 @@ func RegisterWalletKitJSONCallbacks(registry map[string]func(ctx context.Context
 
 		client := NewWalletKitClient(conn)
 		resp, err := client.ImportPublicKey(ctx, req)
+		if err != nil {
+			callback("", err)
+			return
+		}
+
+		respBytes, err := marshaler.Marshal(resp)
+		if err != nil {
+			callback("", err)
+			return
+		}
+		callback(string(respBytes), nil)
+	}
+
+	registry["walletrpc.WalletKit.ImportTapscript"] = func(ctx context.Context,
+		conn *grpc.ClientConn, reqJSON string, callback func(string, error)) {
+
+		req := &ImportTapscriptRequest{}
+		err := marshaler.Unmarshal([]byte(reqJSON), req)
+		if err != nil {
+			callback("", err)
+			return
+		}
+
+		client := NewWalletKitClient(conn)
+		resp, err := client.ImportTapscript(ctx, req)
 		if err != nil {
 			callback("", err)
 			return

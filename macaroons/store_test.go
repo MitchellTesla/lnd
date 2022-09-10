@@ -2,8 +2,7 @@ package macaroons_test
 
 import (
 	"context"
-	"io/ioutil"
-	"os"
+	"crypto/rand"
 	"path"
 	"testing"
 
@@ -21,24 +20,17 @@ var (
 
 // newTestStore creates a new bolt DB in a temporary directory and then
 // initializes a root key storage for that DB.
-func newTestStore(t *testing.T) (string, func(), *macaroons.RootKeyStorage) {
-	tempDir, err := ioutil.TempDir("", "macaroonstore-")
-	require.NoError(t, err)
+func newTestStore(t *testing.T) (string, *macaroons.RootKeyStorage) {
+	tempDir := t.TempDir()
 
-	cleanup, store := openTestStore(t, tempDir)
-	cleanup2 := func() {
-		cleanup()
-		_ = os.RemoveAll(tempDir)
-	}
+	store := openTestStore(t, tempDir)
 
-	return tempDir, cleanup2, store
+	return tempDir, store
 }
 
 // openTestStore opens an existing bolt DB and then initializes a root key
 // storage for that DB.
-func openTestStore(t *testing.T, tempDir string) (func(),
-	*macaroons.RootKeyStorage) {
-
+func openTestStore(t *testing.T, tempDir string) *macaroons.RootKeyStorage {
 	db, err := kvdb.Create(
 		kvdb.BoltBackendName, path.Join(tempDir, "weks.db"), true,
 		kvdb.DefaultDBTimeout,
@@ -51,19 +43,18 @@ func openTestStore(t *testing.T, tempDir string) (func(),
 		t.Fatalf("Error creating root key store: %v", err)
 	}
 
-	cleanup := func() {
+	t.Cleanup(func() {
 		_ = store.Close()
 		_ = db.Close()
-	}
+	})
 
-	return cleanup, store
+	return store
 }
 
 // TestStore tests the normal use cases of the store like creating, unlocking,
 // reading keys and closing it.
 func TestStore(t *testing.T) {
-	tempDir, cleanup, store := newTestStore(t)
-	defer cleanup()
+	tempDir, store := newTestStore(t)
 
 	_, _, err := store.RootKey(context.TODO())
 	require.Equal(t, macaroons.ErrStoreLocked, err)
@@ -113,7 +104,7 @@ func TestStore(t *testing.T) {
 	// Between here and the re-opening of the store, it's possible to get
 	// a double-close, but that's not such a big deal since the tests will
 	// fail anyway in that case.
-	_, store = openTestStore(t, tempDir)
+	store = openTestStore(t, tempDir)
 
 	err = store.CreateUnlock(&badpw)
 	require.Equal(t, snacl.ErrInvalidPassword, err)
@@ -143,8 +134,7 @@ func TestStore(t *testing.T) {
 // TestStoreGenerateNewRootKey tests that a root key can be replaced with a new
 // one in the store without changing the password.
 func TestStoreGenerateNewRootKey(t *testing.T) {
-	_, cleanup, store := newTestStore(t)
-	defer cleanup()
+	_, store := newTestStore(t)
 
 	// The store must be unlocked to replace the root key.
 	err := store.GenerateNewRootKey()
@@ -169,11 +159,45 @@ func TestStoreGenerateNewRootKey(t *testing.T) {
 	require.NotEqual(t, oldRootKey, newRootKey)
 }
 
+// TestStoreSetRootKey tests that a root key can be set to a specified value.
+func TestStoreSetRootKey(t *testing.T) {
+	_, store := newTestStore(t)
+
+	// Create a new random key
+	rootKey := make([]byte, 32)
+	_, err := rand.Read(rootKey)
+	require.NoError(t, err)
+
+	// The store must be unlocked to set the root key.
+	err = store.SetRootKey(rootKey)
+	require.Equal(t, macaroons.ErrStoreLocked, err)
+
+	// Unlock the store and read the current key.
+	pw := []byte("weks")
+	err = store.CreateUnlock(&pw)
+	require.NoError(t, err)
+	oldRootKey, _, err := store.RootKey(defaultRootKeyIDContext)
+	require.NoError(t, err)
+
+	// Ensure the new key is different from the old key.
+	require.NotEqual(t, oldRootKey, rootKey)
+
+	// Replace the root key with the new key.
+	err = store.SetRootKey(rootKey)
+	require.NoError(t, err)
+
+	// Finally, read the root key from the DB and compare it to the one
+	// we created earlier. This makes sure that the encryption/
+	// decryption of the key in the DB worked as expected too.
+	newRootKey, _, err := store.RootKey(defaultRootKeyIDContext)
+	require.NoError(t, err)
+	require.Equal(t, rootKey, newRootKey)
+}
+
 // TestStoreChangePassword tests that the password for the store can be changed
 // without changing the root key.
 func TestStoreChangePassword(t *testing.T) {
-	tempDir, cleanup, store := newTestStore(t)
-	defer cleanup()
+	tempDir, store := newTestStore(t)
 
 	// The store must be unlocked to replace the root key.
 	err := store.ChangePassword(nil, nil)
@@ -214,7 +238,7 @@ func TestStoreChangePassword(t *testing.T) {
 	require.Error(t, err)
 
 	// Let's open it again and try unlocking with the new password.
-	_, store = openTestStore(t, tempDir)
+	store = openTestStore(t, tempDir)
 	err = store.CreateUnlock(&newPw)
 	require.NoError(t, err)
 

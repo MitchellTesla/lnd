@@ -19,7 +19,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/btcsuite/btcutil"
+	"github.com/btcsuite/btcd/btcutil"
 	proxy "github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/lightningnetwork/lnd/autopilot"
 	"github.com/lightningnetwork/lnd/build"
@@ -458,7 +458,7 @@ func Main(cfg *Config, lisCfg ListenerCfg, implCfg *ImplementationCfg,
 			Net:            cfg.net,
 			NewAddress: func() (btcutil.Address, error) {
 				return activeChainControl.Wallet.NewAddress(
-					lnwallet.WitnessPubKey, false,
+					lnwallet.TaprootPubkey, false,
 					lnwallet.DefaultAccountName,
 				)
 			},
@@ -496,15 +496,22 @@ func Main(cfg *Config, lisCfg ListenerCfg, implCfg *ImplementationCfg,
 		}
 	}
 
-	// Initialize the ChainedAcceptor.
-	chainedAcceptor := chanacceptor.NewChainedAcceptor()
+	// Initialize the MultiplexAcceptor. If lnd was started with the
+	// zero-conf feature bit, then this will be a ZeroConfAcceptor.
+	// Otherwise, this will be a ChainedAcceptor.
+	var multiAcceptor chanacceptor.MultiplexAcceptor
+	if cfg.ProtocolOptions.ZeroConf() {
+		multiAcceptor = chanacceptor.NewZeroConfAcceptor()
+	} else {
+		multiAcceptor = chanacceptor.NewChainedAcceptor()
+	}
 
 	// Set up the core server which will listen for incoming peer
 	// connections.
 	server, err := newServer(
 		cfg, cfg.Listeners, dbs, activeChainControl, &idKeyDesc,
 		activeChainControl.Cfg.WalletUnlockParams.ChansToRestore,
-		chainedAcceptor, torController,
+		multiAcceptor, torController,
 	)
 	if err != nil {
 		return mkErr("unable to create server: %v", err)
@@ -534,7 +541,7 @@ func Main(cfg *Config, lisCfg ListenerCfg, implCfg *ImplementationCfg,
 	// start the RPC server.
 	err = rpcServer.addDeps(
 		server, interceptorChain.MacaroonService(), cfg.SubRPCServers,
-		atplManager, server.invoices, tower, chainedAcceptor,
+		atplManager, server.invoices, tower, multiAcceptor,
 	)
 	if err != nil {
 		return mkErr("unable to add deps to RPC server: %v", err)
@@ -973,7 +980,16 @@ func startRestProxy(cfg *Config, rpcServer *rpcServer, restDialOpts []grpc.DialO
 			},
 		},
 	)
-	mux := proxy.NewServeMux(customMarshalerOption)
+	mux := proxy.NewServeMux(
+		customMarshalerOption,
+
+		// Don't allow falling back to other HTTP methods, we want exact
+		// matches only. The actual method to be used can be overwritten
+		// by setting X-HTTP-Method-Override so there should be no
+		// reason for not specifying the correct method in the first
+		// place.
+		proxy.WithDisablePathLengthFallback(),
+	)
 
 	// Register our services with the REST proxy.
 	err := lnrpc.RegisterStateHandlerFromEndpoint(

@@ -3,7 +3,7 @@ package wtmock
 import (
 	"sync"
 
-	"github.com/btcsuite/btcd/btcec"
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/lightningnetwork/lnd/keychain"
 )
 
@@ -39,7 +39,7 @@ func (m *SecretKeyRing) DeriveKey(
 		}, nil
 	}
 
-	privKey, err := btcec.NewPrivateKey(btcec.S256())
+	privKey, err := btcec.NewPrivateKey()
 	if err != nil {
 		return keychain.KeyDescriptor{}, err
 	}
@@ -57,8 +57,8 @@ func (m *SecretKeyRing) DeriveKey(
 // sha256 of the resulting shared point serialized in compressed format. If k is
 // our private key, and P is the public key, we perform the following operation:
 //
-//  sx := k*P
-//  s := sha256(sx.SerializeCompressed())
+//	sx := k*P
+//	s := sha256(sx.SerializeCompressed())
 //
 // NOTE: This is part of the wtclient.ECDHKeyRing interface.
 func (m *SecretKeyRing) ECDH(keyDesc keychain.KeyDescriptor,

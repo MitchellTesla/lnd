@@ -93,23 +93,23 @@ following build dependencies are required:
 
 ### Installing Go
 
-`lnd` is written in Go, with a minimum version of 1.16. To install, run one of 
+`lnd` is written in Go, with a minimum version of 1.18. To install, run one of 
 the following commands for your OS:
 
 <details>
   <summary>Linux (x86-64)</summary>
   
   ```
-  wget https://dl.google.com/go/go1.17.1.linux-amd64.tar.gz
-  sha256sum go1.17.1.linux-amd64.tar.gz | awk -F " " '{ print $1 }'
+  wget https://dl.google.com/go/go1.18.linux-amd64.tar.gz
+  sha256sum go1.18.linux-amd64.tar.gz | awk -F " " '{ print $1 }'
   ```
 
   The final output of the command above should be
-  `dab7d9c34361dc21ec237d584590d72500652e7c909bf082758fb63064fca0ef`. If it
+  `e85278e98f57cdb150fe8409e6e5df5343ecb13cebf03a5d5ff12bd55a80264f`. If it
   isn't, then the target REPO HAS BEEN MODIFIED, and you shouldn't install
   this version of Go. If it matches, then proceed to install Go:
   ```
-  sudo tar -C /usr/local -xzf go1.17.1.linux-amd64.tar.gz
+  sudo tar -C /usr/local -xzf go1.18.linux-amd64.tar.gz
   export PATH=$PATH:/usr/local/go/bin
   ```
 </details>
@@ -118,16 +118,16 @@ the following commands for your OS:
   <summary>Linux (ARMv6)</summary>
   
   ```
-  wget https://dl.google.com/go/go1.17.1.linux-armv6l.tar.gz
-  sha256sum go1.17.1.linux-armv6l.tar.gz | awk -F " " '{ print $1 }'
+  wget https://dl.google.com/go/go1.18.linux-armv6l.tar.gz
+  sha256sum go1.18.linux-armv6l.tar.gz | awk -F " " '{ print $1 }'
   ```
 
   The final output of the command above should be
-  `ed3e4dbc9b80353f6482c441d65b51808290e94ff1d15d56da5f4a7be7353758`. If it
+  `a80fa43d1f4575fb030adbfbaa94acd860c6847820764eecb06c63b7c103612b`. If it
   isn't, then the target REPO HAS BEEN MODIFIED, and you shouldn't install
   this version of Go. If it matches, then proceed to install Go:
   ```
-  tar -C /usr/local -xzf go1.17.1.linux-armv6l.tar.gz
+  tar -C /usr/local -xzf go1.18.linux-armv6l.tar.gz
   export PATH=$PATH:/usr/local/go/bin
   ```  
   
@@ -238,6 +238,33 @@ used directly:
 ⛰  go install -v ./...
 ```
 
+**Tags**
+
+Release binaries and installations from source using `make release-install`
+will have the following tags:
+
+- [autopilotrpc](/lnrpc/autopilotrpc/autopilot.proto)
+- [signrpc](/lnrpc/signrpc/signer.proto)
+- [walletrpc](/lnrpc/walletrpc/walletkit.proto)
+- [chainrpc](/lnrpc/chainrpc/chainnotifier.proto)
+- [invoicesrpc](/lnrpc/invoicesrpc/invoices.proto)
+- [neutrinorpc](/lnrpc/neutrinorpc/neutrino.proto)
+- [routerrpc](/lnrpc/routerrpc/router.proto)
+- [watchtowerrpc](/lnrpc/watchtowerrpc/watchtower.proto)
+- [monitoring](/monitoring) (for Prometheus integration)
+- [peersrpc](/lnrpc/peersrpc/peers.proto)
+- [kvdb_postrgres](/docs/postgres.md)
+- [kvdb_etcd](/docs/etcd.md)
+
+The `dev` tag is used for development builds, and is not included in the
+release builds & installation.
+
+You can specify a custom set of tags when installing from source using the `tags=""` parameter. For example:
+
+```shell
+make install tags="signrpc walletrpc routerrpc invoicesrpc"
+```
+
 **Updating**
 
 To update your version of `lnd` to the latest version run the following
@@ -325,6 +352,9 @@ bitcoind:
 ### Installing btcd
 
 On FreeBSD, use gmake instead of make.
+
+In order to be able to utilize the latest Taproot features, [`btcd` version
+`v0.23.1`](https://github.com/btcsuite/btcd/releases/tag/v0.23.1) MUST be used.
 
 To install btcd, run the following commands:
 
@@ -511,8 +541,9 @@ bearer credentials allowing for delegation, attenuation, and other cool
 features. You can learn more about them in Alex Akselrod's [writeup on
 Github](https://github.com/lightningnetwork/lnd/issues/20).
 
-Running `lnd` for the first time will by default generate the `admin.macaroon`,
-`read_only.macaroon`, and `macaroons.db` files that are used to authenticate
+Running `lncli create` to create a wallet, will by default generate 
+the `admin.macaroon`, `read_only.macaroon`, and `macaroons.db` 
+files that are used to authenticate
 into `lnd`. They will be stored in the network directory (default:
 `lnddir/data/chain/bitcoin/mainnet`) so that it's possible to use a distinct
 password for mainnet, testnet, simnet, etc. Note that if you specified an

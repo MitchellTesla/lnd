@@ -819,6 +819,11 @@
             "format": "byte"
           },
           "description": "An optional set of key-value TLV records. This is useful within the context\nof the SendToRoute call as it allows callers to specify arbitrary K-V pairs\nto drop off at each hop within the onion."
+        },
+        "metadata": {
+          "type": "string",
+          "format": "byte",
+          "description": "The payment metadata to send along with the payment to the payee."
         }
       }
     },
@@ -1422,7 +1427,7 @@
         "FAILED_INSUFFICIENT_BALANCE"
       ],
       "default": "IN_FLIGHT",
-      "description": " - IN_FLIGHT: Payment is still in flight.\n - SUCCEEDED: Payment completed successfully.\n - FAILED_TIMEOUT: There are more routes to try, but the payment timeout was exceeded.\n - FAILED_NO_ROUTE: All possible routes were tried and failed permanently. Or were no\nroutes to the destination at all.\n - FAILED_ERROR: A non-recoverable error has occured.\n - FAILED_INCORRECT_PAYMENT_DETAILS: Payment details incorrect (unknown hash, invalid amt or\ninvalid final cltv delta)\n - FAILED_INSUFFICIENT_BALANCE: Insufficient local balance."
+      "description": " - IN_FLIGHT: Payment is still in flight.\n - SUCCEEDED: Payment completed successfully.\n - FAILED_TIMEOUT: There are more routes to try, but the payment timeout was exceeded.\n - FAILED_NO_ROUTE: All possible routes were tried and failed permanently. Or were no\nroutes to the destination at all.\n - FAILED_ERROR: A non-recoverable error has occurred.\n - FAILED_INCORRECT_PAYMENT_DETAILS: Payment details incorrect (unknown hash, invalid amt or\ninvalid final cltv delta)\n - FAILED_INSUFFICIENT_BALANCE: Insufficient local balance."
     },
     "routerrpcPaymentStatus": {
       "type": "object",
@@ -1635,6 +1640,11 @@
         "amp": {
           "type": "boolean",
           "description": "If set, an AMP-payment will be attempted."
+        },
+        "time_pref": {
+          "type": "number",
+          "format": "double",
+          "description": "The time preference for this payment. Set to -1 to optimize for fees\nonly, to 1 to optimize for reliability only or a value inbetween for a mix."
         }
       }
     },
@@ -1649,6 +1659,10 @@
         "route": {
           "$ref": "#/definitions/lnrpcRoute",
           "description": "Route that should be used to attempt to complete the payment."
+        },
+        "skip_temp_err": {
+          "type": "boolean",
+          "description": "Whether the payment should be marked as failed when a temporary error is\nreturned from the given route. Set it to true so the payment won't be\nfailed unless a terminal error is occurred, such as payment timeout, no\nroutes, incorrect payment details, or insufficient funds."
         }
       }
     },

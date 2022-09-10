@@ -3,7 +3,7 @@ package autopilot
 import (
 	"fmt"
 
-	"github.com/btcsuite/btcutil"
+	"github.com/btcsuite/btcd/btcutil"
 )
 
 // WeightedHeuristic is a tuple that associates a weight to an
@@ -61,7 +61,7 @@ func (c *WeightedCombAttachment) Name() string {
 // maps the NodeID to an attachment directive containing a score and a channel
 // size.
 //
-// The scores is determined by quering the set of sub-heuristics, then
+// The scores is determined by querying the set of sub-heuristics, then
 // combining these scores into a final score according to the active
 // configuration.
 //

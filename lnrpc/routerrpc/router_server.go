@@ -10,8 +10,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/lnrpc"
@@ -363,7 +363,7 @@ func (s *Server) EstimateRouteFee(ctx context.Context,
 	// that exceeds it and is useless to us.
 	mc := s.cfg.RouterBackend.MissionControl
 	route, err := s.cfg.Router.FindRoute(
-		s.cfg.RouterBackend.SelfNode, destNode, amtMsat,
+		s.cfg.RouterBackend.SelfNode, destNode, amtMsat, 0,
 		&routing.RestrictParams{
 			FeeLimit:          feeLimit,
 			CltvLimit:         s.cfg.RouterBackend.MaxTotalTimelock,
@@ -399,13 +399,19 @@ func (s *Server) SendToRouteV2(ctx context.Context,
 		return nil, err
 	}
 
+	var attempt *channeldb.HTLCAttempt
+
 	// Pass route to the router. This call returns the full htlc attempt
 	// information as it is stored in the database. It is possible that both
 	// the attempt return value and err are non-nil. This can happen when
 	// the attempt was already initiated before the error happened. In that
 	// case, we give precedence to the attempt information as stored in the
 	// db.
-	attempt, err := s.cfg.Router.SendToRoute(hash, route)
+	if req.SkipTempErr {
+		attempt, err = s.cfg.Router.SendToRouteSkipTempErr(hash, route)
+	} else {
+		attempt, err = s.cfg.Router.SendToRoute(hash, route)
+	}
 	if attempt != nil {
 		rpcAttempt, err := s.cfg.RouterBackend.MarshalHTLCAttempt(
 			*attempt,
@@ -890,7 +896,9 @@ func (s *Server) HtlcInterceptor(stream Router_HtlcInterceptorServer) error {
 	defer atomic.CompareAndSwapInt32(&s.forwardInterceptorActive, 1, 0)
 
 	// run the forward interceptor.
-	return newForwardInterceptor(s, stream).run()
+	return newForwardInterceptor(
+		s.cfg.RouterBackend.InterceptableForwarder, stream,
+	).run()
 }
 
 func extractOutPoint(req *UpdateChanStatusRequest) (*wire.OutPoint, error) {

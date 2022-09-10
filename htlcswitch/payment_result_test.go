@@ -2,7 +2,6 @@ package htlcswitch
 
 import (
 	"bytes"
-	"io/ioutil"
 	"math/rand"
 	"reflect"
 	"testing"
@@ -103,12 +102,7 @@ func TestNetworkResultStore(t *testing.T) {
 
 	const numResults = 4
 
-	tempDir, err := ioutil.TempDir("", "testdb")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	db, err := channeldb.Open(tempDir)
+	db, err := channeldb.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,9 +149,7 @@ func TestNetworkResultStore(t *testing.T) {
 	// Let the third one subscribe now. THe result should be received
 	// immediately.
 	sub, err := store.subscribeResult(2)
-	if err != nil {
-		t.Fatalf("unable to subscribe: %v", err)
-	}
+	require.NoError(t, err, "unable to subscribe")
 	select {
 	case <-sub:
 	case <-time.After(1 * time.Second):
@@ -173,14 +165,10 @@ func TestNetworkResultStore(t *testing.T) {
 
 	// Add the result and try again.
 	err = store.storeResult(3, results[3])
-	if err != nil {
-		t.Fatalf("unable to store result: %v", err)
-	}
+	require.NoError(t, err, "unable to store result")
 
 	_, err = store.getResult(3)
-	if err != nil {
-		t.Fatalf("unable to get result: %v", err)
-	}
+	require.NoError(t, err, "unable to get result")
 
 	// Since we don't delete results from the store (yet), make sure we
 	// will get subscriptions for all of them.

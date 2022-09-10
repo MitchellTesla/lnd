@@ -1,9 +1,7 @@
 package contractcourt
 
 import (
-	"io/ioutil"
 	"net"
-	"os"
 	"testing"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
@@ -13,6 +11,7 @@ import (
 	"github.com/lightningnetwork/lnd/clock"
 	"github.com/lightningnetwork/lnd/lntest/mock"
 	"github.com/lightningnetwork/lnd/lnwallet"
+	"github.com/stretchr/testify/require"
 )
 
 // TestChainArbitratorRepulishCloses tests that the chain arbitrator will
@@ -21,13 +20,7 @@ import (
 func TestChainArbitratorRepublishCloses(t *testing.T) {
 	t.Parallel()
 
-	tempPath, err := ioutil.TempDir("", "testdb")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tempPath)
-
-	db, err := channeldb.Open(tempPath)
+	db, err := channeldb.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,17 +135,8 @@ func TestChainArbitratorRepublishCloses(t *testing.T) {
 func TestResolveContract(t *testing.T) {
 	t.Parallel()
 
-	// To start with, we'll create a new temp DB for the duration of this
-	// test.
-	tempPath, err := ioutil.TempDir("", "testdb")
-	if err != nil {
-		t.Fatalf("unable to make temp dir: %v", err)
-	}
-	defer os.RemoveAll(tempPath)
-	db, err := channeldb.Open(tempPath)
-	if err != nil {
-		t.Fatalf("unable to open db: %v", err)
-	}
+	db, err := channeldb.Open(t.TempDir())
+	require.NoError(t, err, "unable to open db")
 	defer db.Close()
 
 	// With the DB created, we'll make a new channel, and mark it as
@@ -160,9 +144,7 @@ func TestResolveContract(t *testing.T) {
 	newChannel, _, cleanup, err := lnwallet.CreateTestChannels(
 		channeldb.SingleFunderTweaklessBit,
 	)
-	if err != nil {
-		t.Fatalf("unable to make new test channel: %v", err)
-	}
+	require.NoError(t, err, "unable to make new test channel")
 	defer cleanup()
 	channel := newChannel.State()
 	channel.Db = db.ChannelStateDB()
@@ -206,17 +188,13 @@ func TestResolveContract(t *testing.T) {
 	// While the resolver are active, we'll now remove the channel from the
 	// database (mark is as closed).
 	err = db.ChannelStateDB().AbandonChannel(&channel.FundingOutpoint, 4)
-	if err != nil {
-		t.Fatalf("unable to remove channel: %v", err)
-	}
+	require.NoError(t, err, "unable to remove channel")
 
 	// With the channel removed, we'll now manually call ResolveContract.
 	// This stimulates needing to remove a channel from the chain arb due
 	// to any possible external consistency issues.
 	err = chainArb.ResolveContract(channel.FundingOutpoint)
-	if err != nil {
-		t.Fatalf("unable to resolve contract: %v", err)
-	}
+	require.NoError(t, err, "unable to resolve contract")
 
 	// The shouldn't be an active chain watcher or channel arb for this
 	// channel.
@@ -240,7 +218,5 @@ func TestResolveContract(t *testing.T) {
 	// If we attempt to call this method again, then we should get a nil
 	// error, as there is no more state to be cleaned up.
 	err = chainArb.ResolveContract(channel.FundingOutpoint)
-	if err != nil {
-		t.Fatalf("second resolve call shouldn't fail: %v", err)
-	}
+	require.NoError(t, err, "second resolve call shouldn't fail")
 }

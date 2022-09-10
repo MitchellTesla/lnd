@@ -3,9 +3,9 @@ package chanfunding
 import (
 	"fmt"
 
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 )
@@ -79,6 +79,11 @@ func calculateFees(utxos []Coin, feeRate chainfee.SatPerKWeight) (btcutil.Amount
 		case txscript.IsPayToScriptHash(utxo.PkScript):
 			weightEstimate.AddNestedP2WKHInput()
 
+		case txscript.IsPayToTaproot(utxo.PkScript):
+			weightEstimate.AddTaprootKeySpendInput(
+				txscript.SigHashDefault,
+			)
+
 		default:
 			return 0, 0, &errUnsupportedInput{utxo.PkScript}
 		}
@@ -93,8 +98,8 @@ func calculateFees(utxos []Coin, feeRate chainfee.SatPerKWeight) (btcutil.Amount
 	requiredFeeNoChange := feeRate.FeeForWeight(totalWeight)
 
 	// Estimate the fee required for a transaction with a change output.
-	// Assume that change output is a P2WKH output.
-	weightEstimate.AddP2WKHOutput()
+	// Assume that change output is a P2TR output.
+	weightEstimate.AddP2TROutput()
 
 	// Now that we have added the change output, redo the fee
 	// estimate.
@@ -204,7 +209,8 @@ func CoinSelectSubtractFees(feeRate chainfee.SatPerKWeight, amt,
 	// Obtain fee estimates both with and without using a change
 	// output.
 	requiredFeeNoChange, requiredFeeWithChange, err := calculateFees(
-		selectedUtxos, feeRate)
+		selectedUtxos, feeRate,
+	)
 	if err != nil {
 		return nil, 0, 0, err
 	}

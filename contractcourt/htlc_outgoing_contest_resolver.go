@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/btcsuite/btcutil"
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/lnwallet"
 )
@@ -38,12 +38,12 @@ func newOutgoingContestResolver(res lnwallet.OutgoingHtlcResolution,
 // Resolve commences the resolution of this contract. As this contract hasn't
 // yet timed out, we'll wait for one of two things to happen
 //
-//   1. The HTLC expires. In this case, we'll sweep the funds and send a clean
-//      up cancel message to outside sub-systems.
+//  1. The HTLC expires. In this case, we'll sweep the funds and send a clean
+//     up cancel message to outside sub-systems.
 //
-//   2. The remote party sweeps this HTLC on-chain, in which case we'll add the
-//      pre-image to our global cache, then send a clean up settle message
-//      backwards.
+//  2. The remote party sweeps this HTLC on-chain, in which case we'll add the
+//     pre-image to our global cache, then send a clean up settle message
+//     backwards.
 //
 // When either of these two things happens, we'll create a new resolver which
 // is able to handle the final resolution of the contract. We're only the pivot
@@ -188,14 +188,6 @@ func (h *htlcOutgoingContestResolver) Stop() {
 // NOTE: Part of the ContractResolver interface.
 func (h *htlcOutgoingContestResolver) IsResolved() bool {
 	return h.resolved
-}
-
-// SupplementState allows the user of a ContractResolver to supplement it with
-// state required for the proper resolution of a contract.
-//
-// NOTE: Part of the ContractResolver interface.
-func (h *htlcOutgoingContestResolver) SupplementState(state *channeldb.OpenChannel) {
-	h.htlcTimeoutResolver.SupplementState(state)
 }
 
 // Encode writes an encoded version of the ContractResolver into the passed

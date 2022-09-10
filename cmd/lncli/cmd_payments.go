@@ -14,9 +14,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/btcsuite/btcutil"
-	"github.com/jedib0t/go-pretty/table"
-	"github.com/jedib0t/go-pretty/text"
+	"github.com/btcsuite/btcd/btcutil"
+	"github.com/jedib0t/go-pretty/v6/table"
+	"github.com/jedib0t/go-pretty/v6/text"
 	"github.com/lightninglabs/protobuf-hex-display/jsonpb"
 	"github.com/lightningnetwork/lnd/chainreg"
 	"github.com/lightningnetwork/lnd/lnrpc"
@@ -95,6 +95,11 @@ var (
 		Usage: "if set to true, then AMP will be used to complete the " +
 			"payment",
 	}
+
+	timePrefFlag = cli.Float64Flag{
+		Name:  "time_pref",
+		Usage: "(optional) expresses time preference (range -1 to 1)",
+	}
 )
 
 // paymentFlags returns common flags for sendpayment and payinvoice.
@@ -140,6 +145,7 @@ func paymentFlags() []cli.Flag {
 		},
 		dataFlag, inflightUpdatesFlag, maxPartsFlag, jsonFlag,
 		maxShardSizeSatFlag, maxShardSizeMsatFlag, ampFlag,
+		timePrefFlag,
 	}
 }
 
@@ -165,7 +171,8 @@ var sendPaymentCommand = cli.Command{
 	For invoice with payment address:
 	    --dest=N --amt=A --payment_hash=H --final_cltv_delta=T --pay_addr=H
 	`,
-	ArgsUsage: "dest amt payment_hash final_cltv_delta pay_addr | --pay_req=[payment request]",
+	ArgsUsage: "dest amt payment_hash final_cltv_delta pay_addr | " +
+		"--pay_req=R [--pay_addr=H]",
 	Flags: append(paymentFlags(),
 		cli.StringFlag{
 			Name: "dest, d",
@@ -238,7 +245,7 @@ func confirmPayReq(resp *lnrpc.PayReq, amt, feeLimit int64) error {
 	return nil
 }
 
-func parsePayAddr(ctx *cli.Context) ([]byte, error) {
+func parsePayAddr(ctx *cli.Context, args cli.Args) ([]byte, error) {
 	var (
 		payAddr []byte
 		err     error
@@ -247,8 +254,8 @@ func parsePayAddr(ctx *cli.Context) ([]byte, error) {
 	case ctx.IsSet("pay_addr"):
 		payAddr, err = hex.DecodeString(ctx.String("pay_addr"))
 
-	case ctx.Args().Present():
-		payAddr, err = hex.DecodeString(ctx.Args().First())
+	case args.Present():
+		payAddr, err = hex.DecodeString(args.First())
 	}
 
 	if err != nil {
@@ -285,7 +292,10 @@ func sendPayment(ctx *cli.Context) error {
 		// We'll attempt to parse a payment address as well, given that
 		// if the user is using an AMP invoice, then they may be trying
 		// to specify that value manually.
-		payAddr, err := parsePayAddr(ctx)
+		//
+		// Don't parse unnamed arguments to prevent confusion with the main
+		// unnamed argument format for non-AMP payments.
+		payAddr, err := parsePayAddr(ctx, nil)
 		if err != nil {
 			return err
 		}
@@ -388,10 +398,11 @@ func sendPayment(ctx *cli.Context) error {
 		if err != nil {
 			return err
 		}
+		args = args.Tail()
 		req.FinalCltvDelta = int32(delta)
 	}
 
-	payAddr, err := parsePayAddr(ctx)
+	payAddr, err := parsePayAddr(ctx, args)
 	if err != nil {
 		return err
 	}
@@ -522,6 +533,9 @@ func sendPaymentRequest(ctx *cli.Context,
 	}
 
 	req.FeeLimitSat = feeLimit
+
+	// Set time pref.
+	req.TimePref = ctx.Float64(timePrefFlag.Name)
 
 	// Always print in-flight updates for the table output.
 	printJSON := ctx.Bool(jsonFlag.Name)
@@ -864,6 +878,13 @@ var sendToRouteCommand = cli.Command{
 			Usage: "a json array string in the format of the response " +
 				"of queryroutes that denotes which routes to use",
 		},
+		cli.BoolFlag{
+			Name: "skip_temp_err",
+			Usage: "Whether the payment should be marked as " +
+				"failed when a temporary error occurred. Set " +
+				"it to true so the payment won't be failed " +
+				"unless a terminal error has occurred.",
+		},
 	},
 	Action: sendToRoute,
 }
@@ -957,6 +978,7 @@ func sendToRoute(ctx *cli.Context) error {
 	req := &routerrpc.SendToRouteRequest{
 		PaymentHash: rHash,
 		Route:       route,
+		SkipTempErr: ctx.Bool("skip_temp_err"),
 	}
 
 	return sendToRouteRequest(ctx, req)
@@ -1019,6 +1041,14 @@ var queryRoutesCommand = cli.Command{
 			Usage: "(optional) the channel id of the channel " +
 				"that must be taken to the first hop",
 		},
+		cli.StringSliceFlag{
+			Name: "ignore_pair",
+			Usage: "ignore directional node pair " +
+				"<node1>:<node2>. This flag can be specified " +
+				"multiple times if multiple node pairs are " +
+				"to be ignored",
+		},
+		timePrefFlag,
 		cltvLimitFlag,
 	},
 	Action: actionDecorator(queryRoutes),
@@ -1064,6 +1094,31 @@ func queryRoutes(ctx *cli.Context) error {
 		return err
 	}
 
+	pairs := ctx.StringSlice("ignore_pair")
+	ignoredPairs := make([]*lnrpc.NodePair, len(pairs))
+	for i, pair := range pairs {
+		nodes := strings.Split(pair, ":")
+		if len(nodes) != 2 {
+			return fmt.Errorf("invalid node pair format. " +
+				"Expected <node1 pub key>:<node2 pub key>")
+		}
+
+		node1, err := hex.DecodeString(nodes[0])
+		if err != nil {
+			return err
+		}
+
+		node2, err := hex.DecodeString(nodes[1])
+		if err != nil {
+			return err
+		}
+
+		ignoredPairs[i] = &lnrpc.NodePair{
+			From: node1,
+			To:   node2,
+		}
+	}
+
 	req := &lnrpc.QueryRoutesRequest{
 		PubKey:            dest,
 		Amt:               amt,
@@ -1072,6 +1127,8 @@ func queryRoutes(ctx *cli.Context) error {
 		UseMissionControl: ctx.Bool("use_mc"),
 		CltvLimit:         uint32(ctx.Uint64(cltvLimitFlag.Name)),
 		OutgoingChanId:    ctx.Uint64("outgoing_chanid"),
+		TimePref:          ctx.Float64(timePrefFlag.Name),
+		IgnoredPairs:      ignoredPairs,
 	}
 
 	route, err := client.QueryRoutes(ctxc, req)
@@ -1119,13 +1176,22 @@ var listPaymentsCommand = cli.Command{
 	Name:     "listpayments",
 	Category: "Payments",
 	Usage:    "List all outgoing payments.",
-	Description: "This command enables the retrieval of payments stored " +
-		"in the database. Pagination is supported by the usage of " +
-		"index_offset in combination with the paginate_forwards flag. " +
-		"Reversed pagination is enabled by default to receive " +
-		"current payments first. Pagination can be resumed by using " +
-		"the returned last_index_offset (for forwards order), or " +
-		"first_index_offset (for reversed order) as the offset_index. ",
+	Description: `
+	This command enables the retrieval of payments stored
+	in the database.
+
+	Pagination is supported by the usage of index_offset in combination with
+	the paginate_forwards flag.
+	Reversed pagination is enabled by default to receive current payments
+	first. Pagination can be resumed by using the returned last_index_offset
+	(for forwards order), or first_index_offset (for reversed order) as the
+	offset_index.
+
+	Because counting all payments in the payment database can take a long
+	time on systems with many payments, the count is not returned by
+	default. That feature can be turned on with the --count_total_payments
+	flag.
+	`,
 	Flags: []cli.Flag{
 		cli.BoolFlag{
 			Name: "include_incomplete",
@@ -1156,6 +1222,13 @@ var listPaymentsCommand = cli.Command{
 				"index_offset will be returned, allowing " +
 				"forwards pagination",
 		},
+		cli.BoolFlag{
+			Name: "count_total_payments",
+			Usage: "if set, all payments (complete or incomplete, " +
+				"independent of max_payments parameter) will " +
+				"be counted; can take a long time on systems " +
+				"with many payments",
+		},
 	},
 	Action: actionDecorator(listPayments),
 }
@@ -1166,10 +1239,11 @@ func listPayments(ctx *cli.Context) error {
 	defer cleanUp()
 
 	req := &lnrpc.ListPaymentsRequest{
-		IncludeIncomplete: ctx.Bool("include_incomplete"),
-		IndexOffset:       uint64(ctx.Uint("index_offset")),
-		MaxPayments:       uint64(ctx.Uint("max_payments")),
-		Reversed:          !ctx.Bool("paginate_forwards"),
+		IncludeIncomplete:  ctx.Bool("include_incomplete"),
+		IndexOffset:        uint64(ctx.Uint("index_offset")),
+		MaxPayments:        uint64(ctx.Uint("max_payments")),
+		Reversed:           !ctx.Bool("paginate_forwards"),
+		CountTotalPayments: ctx.Bool("count_total_payments"),
 	}
 
 	payments, err := client.ListPayments(ctxc, req)
@@ -1332,6 +1406,11 @@ var buildRouteCommand = cli.Command{
 				"use for the first hop of the payment",
 			Value: 0,
 		},
+		cli.StringFlag{
+			Name: "payment_addr",
+			Usage: "hex encoded payment address to set in the " +
+				"last hop's mpp record",
+		},
 	},
 }
 
@@ -1366,12 +1445,24 @@ func buildRoute(ctx *cli.Context) error {
 		}
 	}
 
+	var (
+		payAddr []byte
+		err     error
+	)
+	if ctx.IsSet("payment_addr") {
+		payAddr, err = hex.DecodeString(ctx.String("payment_addr"))
+		if err != nil {
+			return fmt.Errorf("error parsing payment_addr: %v", err)
+		}
+	}
+
 	// Call BuildRoute rpc.
 	req := &routerrpc.BuildRouteRequest{
 		AmtMsat:        amtMsat,
 		FinalCltvDelta: int32(ctx.Int64("final_cltv_delta")),
 		HopPubkeys:     rpcHops,
 		OutgoingChanId: ctx.Uint64("outgoing_chan_id"),
+		PaymentAddr:    payAddr,
 	}
 
 	route, err := client.BuildRoute(ctxc, req)

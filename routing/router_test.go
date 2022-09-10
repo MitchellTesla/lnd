@@ -10,10 +10,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/btcsuite/btcd/btcec"
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/ecdsa"
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
 	"github.com/davecgh/go-spew/spew"
 	"github.com/lightningnetwork/lnd/chainntnfs"
 	"github.com/lightningnetwork/lnd/channeldb"
@@ -81,6 +82,9 @@ func (c *testCtx) RestartRouter(t *testing.T) {
 		Control:            makeMockControlTower(),
 		ChannelPruneExpiry: time.Hour * 24,
 		GraphPruneInterval: time.Hour * 2,
+		IsAlias: func(scid lnwire.ShortChannelID) bool {
+			return false
+		},
 	})
 	require.NoError(t, err, "unable to create router")
 	require.NoError(t, router.Start(), "unable to start router")
@@ -164,6 +168,9 @@ func createTestCtxFromGraphInstanceAssumeValid(t *testing.T,
 		Clock:               clock.NewTestClock(time.Unix(1, 0)),
 		AssumeChannelValid:  assumeValid,
 		StrictZombiePruning: strictPruning,
+		IsAlias: func(scid lnwire.ShortChannelID) bool {
+			return false
+		},
 	})
 	require.NoError(t, err, "unable to create router")
 	require.NoError(t, router.Start(), "unable to start router")
@@ -189,7 +196,7 @@ func createTestCtxFromGraphInstanceAssumeValid(t *testing.T,
 func createTestCtxSingleNode(t *testing.T,
 	startingHeight uint32) (*testCtx, func()) {
 
-	graph, graphBackend, cleanup, err := makeTestGraph(true)
+	graph, graphBackend, err := makeTestGraph(t, true)
 	require.NoError(t, err, "failed to make test graph")
 
 	sourceNode, err := createTestNode()
@@ -202,7 +209,6 @@ func createTestCtxSingleNode(t *testing.T,
 	graphInstance := &testGraphInstance{
 		graph:        graph,
 		graphBackend: graphBackend,
-		cleanUp:      cleanup,
 	}
 
 	return createTestCtxFromGraphInstance(
@@ -215,7 +221,7 @@ func createTestCtxFromFile(t *testing.T,
 
 	// We'll attempt to locate and parse out the file
 	// that encodes the graph that our tests should be run against.
-	graphInstance, err := parseTestGraph(true, testGraph)
+	graphInstance, err := parseTestGraph(t, true, testGraph)
 	require.NoError(t, err, "unable to create test graph")
 
 	return createTestCtxFromGraphInstance(
@@ -232,8 +238,7 @@ func signErrChanUpdate(t *testing.T, key *btcec.PrivateKey,
 	require.NoError(t, err, "failed to retrieve data to sign")
 
 	digest := chainhash.DoubleHashB(chanUpdateMsg)
-	sig, err := key.Sign(digest)
-	require.NoError(t, err, "failed to sign msg")
+	sig := ecdsa.Sign(key, digest)
 
 	errChanUpdate.Signature, err = lnwire.NewSigFromSignature(sig)
 	require.NoError(t, err, "failed to create new signature")
@@ -268,7 +273,7 @@ func TestFindRoutesWithFeeLimit(t *testing.T) {
 
 	route, err := ctx.router.FindRoute(
 		ctx.router.selfNode.PubKeyBytes,
-		target, paymentAmt, restrictions, nil, nil,
+		target, paymentAmt, 0, restrictions, nil, nil,
 		MinCLTVDelta,
 	)
 	require.NoError(t, err, "unable to find any routes")
@@ -386,9 +391,8 @@ func TestChannelUpdateValidation(t *testing.T) {
 		}, 2),
 	}
 
-	testGraph, err := createTestGraphFromChannels(true, testChannels, "a")
+	testGraph, err := createTestGraphFromChannels(t, true, testChannels, "a")
 	require.NoError(t, err, "unable to create graph")
-	defer testGraph.cleanUp()
 
 	const startingBlockHeight = 101
 	ctx, cleanUp := createTestCtxFromGraphInstance(
@@ -629,7 +633,7 @@ func TestSendPaymentErrorFeeInsufficientPrivateEdge(t *testing.T) {
 		sgNode           = ctx.aliases["songoku"]
 	)
 
-	sgNodeID, err := btcec.ParsePubKey(sgNode[:], btcec.S256())
+	sgNodeID, err := btcec.ParsePubKey(sgNode[:])
 	require.NoError(t, err)
 
 	// Craft a LightningPayment struct that'll send a payment from roasbeef
@@ -670,7 +674,6 @@ func TestSendPaymentErrorFeeInsufficientPrivateEdge(t *testing.T) {
 	copy(preImage[:], bytes.Repeat([]byte{9}, 32))
 	ctx.router.cfg.Payer.(*mockPaymentAttemptDispatcherOld).setPaymentResult(
 		func(firstHop lnwire.ShortChannelID) ([32]byte, error) {
-
 			if firstHop != roasbeefSongoku || errorReturned {
 				return preImage, nil
 			}
@@ -685,7 +688,8 @@ func TestSendPaymentErrorFeeInsufficientPrivateEdge(t *testing.T) {
 					Update: errChanUpdate,
 				}, 1,
 			)
-		})
+		},
+	)
 
 	// Send off the payment request to the router, route through son
 	// goku and then across the private channel to elst.
@@ -763,7 +767,7 @@ func TestSendPaymentPrivateEdgeUpdateFeeExceedsLimit(t *testing.T) {
 		feeLimit         = lnwire.MilliSatoshi(500000)
 	)
 
-	sgNodeID, err := btcec.ParsePubKey(sgNode[:], btcec.S256())
+	sgNodeID, err := btcec.ParsePubKey(sgNode[:])
 	require.NoError(t, err)
 
 	// Craft a LightningPayment struct that'll send a payment from roasbeef
@@ -802,7 +806,6 @@ func TestSendPaymentPrivateEdgeUpdateFeeExceedsLimit(t *testing.T) {
 	copy(preImage[:], bytes.Repeat([]byte{9}, 32))
 	ctx.router.cfg.Payer.(*mockPaymentAttemptDispatcherOld).setPaymentResult(
 		func(firstHop lnwire.ShortChannelID) ([32]byte, error) {
-
 			if firstHop != roasbeefSongoku || errorReturned {
 				return preImage, nil
 			}
@@ -817,7 +820,8 @@ func TestSendPaymentPrivateEdgeUpdateFeeExceedsLimit(t *testing.T) {
 					Update: errChanUpdate,
 				}, 1,
 			)
-		})
+		},
+	)
 
 	// Send off the payment request to the router, route through son
 	// goku and then across the private channel to elst.
@@ -1168,9 +1172,7 @@ func TestAddProof(t *testing.T) {
 	fundingTx, _, chanID, err := createChannelEdge(ctx,
 		bitcoinKey1.SerializeCompressed(), bitcoinKey2.SerializeCompressed(),
 		100, 0)
-	if err != nil {
-		t.Fatalf("unable create channel edge: %v", err)
-	}
+	require.NoError(t, err, "unable create channel edge")
 	fundingBlock := &wire.MsgBlock{
 		Transactions: []*wire.MsgTx{fundingTx},
 	}
@@ -1197,9 +1199,7 @@ func TestAddProof(t *testing.T) {
 	}
 
 	info, _, _, err := ctx.router.GetChannelByID(*chanID)
-	if err != nil {
-		t.Fatalf("unable to get channel: %v", err)
-	}
+	require.NoError(t, err, "unable to get channel")
 	if info.AuthProof == nil {
 		t.Fatal("proof have been updated")
 	}
@@ -1245,12 +1245,9 @@ func TestIgnoreChannelEdgePolicyForUnknownChannel(t *testing.T) {
 	// Setup an initially empty network.
 	testChannels := []*testChannel{}
 	testGraph, err := createTestGraphFromChannels(
-		true, testChannels, "roasbeef",
+		t, true, testChannels, "roasbeef",
 	)
-	if err != nil {
-		t.Fatalf("unable to create graph: %v", err)
-	}
-	defer testGraph.cleanUp()
+	require.NoError(t, err, "unable to create graph")
 
 	ctx, cleanUp := createTestCtxFromGraphInstance(
 		t, startingBlockHeight, testGraph, false,
@@ -1269,9 +1266,7 @@ func TestIgnoreChannelEdgePolicyForUnknownChannel(t *testing.T) {
 		ctx, bitcoinKey1.SerializeCompressed(),
 		bitcoinKey2.SerializeCompressed(), 10000, 500,
 	)
-	if err != nil {
-		t.Fatalf("unable to create channel edge: %v", err)
-	}
+	require.NoError(t, err, "unable to create channel edge")
 	fundingBlock := &wire.MsgBlock{
 		Transactions: []*wire.MsgTx{fundingTx},
 	}
@@ -1335,16 +1330,12 @@ func TestAddEdgeUnknownVertexes(t *testing.T) {
 
 	// The two nodes we are about to add should not exist yet.
 	_, exists1, err := ctx.graph.HasLightningNode(pub1)
-	if err != nil {
-		t.Fatalf("unable to query graph: %v", err)
-	}
+	require.NoError(t, err, "unable to query graph")
 	if exists1 {
 		t.Fatalf("node already existed")
 	}
 	_, exists2, err := ctx.graph.HasLightningNode(pub2)
-	if err != nil {
-		t.Fatalf("unable to query graph: %v", err)
-	}
+	require.NoError(t, err, "unable to query graph")
 	if exists2 {
 		t.Fatalf("node already existed")
 	}
@@ -1356,9 +1347,7 @@ func TestAddEdgeUnknownVertexes(t *testing.T) {
 		bitcoinKey2.SerializeCompressed(),
 		10000, 500,
 	)
-	if err != nil {
-		t.Fatalf("unable to create channel edge: %v", err)
-	}
+	require.NoError(t, err, "unable to create channel edge")
 	fundingBlock := &wire.MsgBlock{
 		Transactions: []*wire.MsgTx{fundingTx},
 	}
@@ -1419,16 +1408,12 @@ func TestAddEdgeUnknownVertexes(t *testing.T) {
 	// After adding the edge between the two previously unknown nodes, they
 	// should have been added to the graph.
 	_, exists1, err = ctx.graph.HasLightningNode(pub1)
-	if err != nil {
-		t.Fatalf("unable to query graph: %v", err)
-	}
+	require.NoError(t, err, "unable to query graph")
 	if !exists1 {
 		t.Fatalf("node1 was not added to the graph")
 	}
 	_, exists2, err = ctx.graph.HasLightningNode(pub2)
-	if err != nil {
-		t.Fatalf("unable to query graph: %v", err)
-	}
+	require.NoError(t, err, "unable to query graph")
 	if !exists2 {
 		t.Fatalf("node2 was not added to the graph")
 	}
@@ -1439,7 +1424,7 @@ func TestAddEdgeUnknownVertexes(t *testing.T) {
 
 	// We will connect node 1 to "sophon"
 	connectNode := ctx.aliases["sophon"]
-	connectNodeKey, err := btcec.ParsePubKey(connectNode[:], btcec.S256())
+	connectNodeKey, err := btcec.ParsePubKey(connectNode[:])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1461,9 +1446,7 @@ func TestAddEdgeUnknownVertexes(t *testing.T) {
 	fundingTx, _, chanID, err = createChannelEdge(ctx,
 		pubKey1.SerializeCompressed(), pubKey2.SerializeCompressed(),
 		10000, 510)
-	if err != nil {
-		t.Fatalf("unable to create channel edge: %v", err)
-	}
+	require.NoError(t, err, "unable to create channel edge")
 	fundingBlock = &wire.MsgBlock{
 		Transactions: []*wire.MsgTx{fundingTx},
 	}
@@ -1525,12 +1508,10 @@ func TestAddEdgeUnknownVertexes(t *testing.T) {
 	copy(targetPubKeyBytes[:], targetNode.SerializeCompressed())
 	_, err = ctx.router.FindRoute(
 		ctx.router.selfNode.PubKeyBytes,
-		targetPubKeyBytes, paymentAmt, noRestrictions, nil, nil,
+		targetPubKeyBytes, paymentAmt, 0, noRestrictions, nil, nil,
 		MinCLTVDelta,
 	)
-	if err != nil {
-		t.Fatalf("unable to find any routes: %v", err)
-	}
+	require.NoError(t, err, "unable to find any routes")
 
 	// Now check that we can update the node info for the partial node
 	// without messing up the channel graph.
@@ -1568,26 +1549,20 @@ func TestAddEdgeUnknownVertexes(t *testing.T) {
 	// updated.
 	_, err = ctx.router.FindRoute(
 		ctx.router.selfNode.PubKeyBytes,
-		targetPubKeyBytes, paymentAmt, noRestrictions, nil, nil,
+		targetPubKeyBytes, paymentAmt, 0, noRestrictions, nil, nil,
 		MinCLTVDelta,
 	)
-	if err != nil {
-		t.Fatalf("unable to find any routes: %v", err)
-	}
+	require.NoError(t, err, "unable to find any routes")
 
 	copy1, err := ctx.graph.FetchLightningNode(pub1)
-	if err != nil {
-		t.Fatalf("unable to fetch node: %v", err)
-	}
+	require.NoError(t, err, "unable to fetch node")
 
 	if copy1.Alias != n1.Alias {
 		t.Fatalf("fetched node not equal to original")
 	}
 
 	copy2, err := ctx.graph.FetchLightningNode(pub2)
-	if err != nil {
-		t.Fatalf("unable to fetch node: %v", err)
-	}
+	require.NoError(t, err, "unable to fetch node")
 
 	if copy2.Alias != n2.Alias {
 		t.Fatalf("fetched node not equal to original")
@@ -1642,9 +1617,7 @@ func TestWakeUpOnStaleBranch(t *testing.T) {
 	time.Sleep(time.Millisecond * 500)
 
 	_, forkHeight, err := ctx.chain.GetBestBlock()
-	if err != nil {
-		t.Fatalf("unable to ge best block: %v", err)
-	}
+	require.NoError(t, err, "unable to ge best block")
 
 	// Create 10 blocks on the minority chain, confirming chanID2.
 	for i := uint32(1); i <= 10; i++ {
@@ -1675,13 +1648,9 @@ func TestWakeUpOnStaleBranch(t *testing.T) {
 	// Now add the two edges to the channel graph, and check that they
 	// correctly show up in the database.
 	node1, err := createTestNode()
-	if err != nil {
-		t.Fatalf("unable to create test node: %v", err)
-	}
+	require.NoError(t, err, "unable to create test node")
 	node2, err := createTestNode()
-	if err != nil {
-		t.Fatalf("unable to create test node: %v", err)
-	}
+	require.NoError(t, err, "unable to create test node")
 
 	edge1 := &channeldb.ChannelEdgeInfo{
 		ChannelID:     chanID1,
@@ -1772,6 +1741,10 @@ func TestWakeUpOnStaleBranch(t *testing.T) {
 
 		// We'll set the delay to zero to prune immediately.
 		FirstTimePruneDelay: 0,
+
+		IsAlias: func(scid lnwire.ShortChannelID) bool {
+			return false
+		},
 	})
 	if err != nil {
 		t.Fatalf("unable to create router %v", err)
@@ -1851,9 +1824,7 @@ func TestDisconnectedBlocks(t *testing.T) {
 	time.Sleep(time.Millisecond * 500)
 
 	_, forkHeight, err := ctx.chain.GetBestBlock()
-	if err != nil {
-		t.Fatalf("unable to get best block: %v", err)
-	}
+	require.NoError(t, err, "unable to get best block")
 
 	// Create 10 blocks on the minority chain, confirming chanID2.
 	var minorityChain []*wire.MsgBlock
@@ -1886,13 +1857,9 @@ func TestDisconnectedBlocks(t *testing.T) {
 	// Now add the two edges to the channel graph, and check that they
 	// correctly show up in the database.
 	node1, err := createTestNode()
-	if err != nil {
-		t.Fatalf("unable to create test node: %v", err)
-	}
+	require.NoError(t, err, "unable to create test node")
 	node2, err := createTestNode()
-	if err != nil {
-		t.Fatalf("unable to create test node: %v", err)
-	}
+	require.NoError(t, err, "unable to create test node")
 
 	edge1 := &channeldb.ChannelEdgeInfo{
 		ChannelID:        chanID1,
@@ -2032,9 +1999,7 @@ func TestRouterChansClosedOfflinePruneGraph(t *testing.T) {
 		bitcoinKey1.SerializeCompressed(),
 		bitcoinKey2.SerializeCompressed(),
 		chanValue, uint32(nextHeight))
-	if err != nil {
-		t.Fatalf("unable create channel edge: %v", err)
-	}
+	require.NoError(t, err, "unable create channel edge")
 	block102.Transactions = append(block102.Transactions, fundingTx1)
 	ctx.chain.addBlock(block102, uint32(nextHeight), rand.Uint32())
 	ctx.chain.setBestBlock(int32(nextHeight))
@@ -2045,13 +2010,9 @@ func TestRouterChansClosedOfflinePruneGraph(t *testing.T) {
 	// for the ChannelRouter to properly recognize the channel we added
 	// above.
 	node1, err := createTestNode()
-	if err != nil {
-		t.Fatalf("unable to create test node: %v", err)
-	}
+	require.NoError(t, err, "unable to create test node")
 	node2, err := createTestNode()
-	if err != nil {
-		t.Fatalf("unable to create test node: %v", err)
-	}
+	require.NoError(t, err, "unable to create test node")
 	edge1 := &channeldb.ChannelEdgeInfo{
 		ChannelID:     chanID1.ToUint64(),
 		NodeKey1Bytes: node1.PubKeyBytes,
@@ -2097,9 +2058,7 @@ func TestRouterChansClosedOfflinePruneGraph(t *testing.T) {
 
 	// At this point, our starting height should be 107.
 	_, chainHeight, err := ctx.chain.GetBestBlock()
-	if err != nil {
-		t.Fatalf("unable to get best block: %v", err)
-	}
+	require.NoError(t, err, "unable to get best block")
 	if chainHeight != 107 {
 		t.Fatalf("incorrect chain height: expected %v, got %v",
 			107, chainHeight)
@@ -2139,9 +2098,7 @@ func TestRouterChansClosedOfflinePruneGraph(t *testing.T) {
 
 	// At this point, our starting height should be 112.
 	_, chainHeight, err = ctx.chain.GetBestBlock()
-	if err != nil {
-		t.Fatalf("unable to get best block: %v", err)
-	}
+	require.NoError(t, err, "unable to get best block")
 	if chainHeight != 112 {
 		t.Fatalf("incorrect chain height: expected %v, got %v",
 			112, chainHeight)
@@ -2260,12 +2217,11 @@ func TestPruneChannelGraphStaleEdges(t *testing.T) {
 		// We'll create our test graph and router backed with these test
 		// channels we've created.
 		testGraph, err := createTestGraphFromChannels(
-			true, testChannels, "a",
+			t, true, testChannels, "a",
 		)
 		if err != nil {
 			t.Fatalf("unable to create test graph: %v", err)
 		}
-		defer testGraph.cleanUp()
 
 		const startingHeight = 100
 		ctx, cleanUp := createTestCtxFromGraphInstance(
@@ -2392,12 +2348,9 @@ func testPruneChannelGraphDoubleDisabled(t *testing.T, assumeValid bool) {
 	// We'll create our test graph and router backed with these test
 	// channels we've created.
 	testGraph, err := createTestGraphFromChannels(
-		true, testChannels, "self",
+		t, true, testChannels, "self",
 	)
-	if err != nil {
-		t.Fatalf("unable to create test graph: %v", err)
-	}
-	defer testGraph.cleanUp()
+	require.NoError(t, err, "unable to create test graph")
 
 	const startingHeight = 100
 	ctx, cleanUp := createTestCtxFromGraphInstanceAssumeValid(
@@ -2450,9 +2403,7 @@ func TestFindPathFeeWeighting(t *testing.T) {
 	copy(preImage[:], bytes.Repeat([]byte{9}, 32))
 
 	sourceNode, err := ctx.graph.SourceNode()
-	if err != nil {
-		t.Fatalf("unable to fetch source node: %v", err)
-	}
+	require.NoError(t, err, "unable to fetch source node")
 
 	amt := lnwire.MilliSatoshi(100)
 
@@ -2465,11 +2416,9 @@ func TestFindPathFeeWeighting(t *testing.T) {
 		ctx.graph, nil, &mockBandwidthHints{},
 		noRestrictions,
 		testPathFindingConfig,
-		sourceNode.PubKeyBytes, target, amt, 0,
+		sourceNode.PubKeyBytes, target, amt, 0, 0,
 	)
-	if err != nil {
-		t.Fatalf("unable to find path: %v", err)
-	}
+	require.NoError(t, err, "unable to find path")
 
 	// The route that was chosen should be exactly one hop, and should be
 	// directly to luoji.
@@ -2503,9 +2452,7 @@ func TestIsStaleNode(t *testing.T) {
 		bitcoinKey1.SerializeCompressed(),
 		bitcoinKey2.SerializeCompressed(),
 		10000, 500)
-	if err != nil {
-		t.Fatalf("unable to create channel edge: %v", err)
-	}
+	require.NoError(t, err, "unable to create channel edge")
 	fundingBlock := &wire.MsgBlock{
 		Transactions: []*wire.MsgTx{fundingTx},
 	}
@@ -2582,9 +2529,7 @@ func TestIsKnownEdge(t *testing.T) {
 		bitcoinKey1.SerializeCompressed(),
 		bitcoinKey2.SerializeCompressed(),
 		10000, 500)
-	if err != nil {
-		t.Fatalf("unable to create channel edge: %v", err)
-	}
+	require.NoError(t, err, "unable to create channel edge")
 	fundingBlock := &wire.MsgBlock{
 		Transactions: []*wire.MsgTx{fundingTx},
 	}
@@ -2633,9 +2578,7 @@ func TestIsStaleEdgePolicy(t *testing.T) {
 		bitcoinKey1.SerializeCompressed(),
 		bitcoinKey2.SerializeCompressed(),
 		10000, 500)
-	if err != nil {
-		t.Fatalf("unable to create channel edge: %v", err)
-	}
+	require.NoError(t, err, "unable to create channel edge")
 	fundingBlock := &wire.MsgBlock{
 		Transactions: []*wire.MsgTx{fundingTx},
 	}
@@ -2718,7 +2661,7 @@ func TestIsStaleEdgePolicy(t *testing.T) {
 func TestEmptyRoutesGenerateSphinxPacket(t *testing.T) {
 	t.Parallel()
 
-	sessionKey, _ := btcec.NewPrivateKey(btcec.S256())
+	sessionKey, _ := btcec.NewPrivateKey()
 	emptyRoute := &route.Route{}
 	_, _, err := generateSphinxPacket(emptyRoute, testHash[:], sessionKey)
 	if err != route.ErrNoRouteHopsProvided {
@@ -2763,11 +2706,8 @@ func TestUnknownErrorSource(t *testing.T) {
 		}, 4),
 	}
 
-	testGraph, err := createTestGraphFromChannels(true, testChannels, "a")
-	defer testGraph.cleanUp()
-	if err != nil {
-		t.Fatalf("unable to create graph: %v", err)
-	}
+	testGraph, err := createTestGraphFromChannels(t, true, testChannels, "a")
+	require.NoError(t, err, "unable to create graph")
 
 	const startingBlockHeight = 101
 	ctx, cleanUp := createTestCtxFromGraphInstance(
@@ -2807,9 +2747,7 @@ func TestUnknownErrorSource(t *testing.T) {
 	// which should pruning the channel a->b. We expect the payment to
 	// succeed via a->d.
 	_, _, err = ctx.router.SendPayment(&payment)
-	if err != nil {
-		t.Fatalf("expected payment to succeed, but got: %v", err)
-	}
+	require.NoError(t, err, "expected payment to succeed, but got")
 
 	// Next we modify payment result to return an unknown failure.
 	ctx.router.cfg.Payer.(*mockPaymentAttemptDispatcherOld).setPaymentResult(
@@ -2899,11 +2837,8 @@ func TestSendToRouteStructuredError(t *testing.T) {
 		}, 2),
 	}
 
-	testGraph, err := createTestGraphFromChannels(true, testChannels, "a")
-	if err != nil {
-		t.Fatalf("unable to create graph: %v", err)
-	}
-	defer testGraph.cleanUp()
+	testGraph, err := createTestGraphFromChannels(t, true, testChannels, "a")
+	require.NoError(t, err, "unable to create graph")
 
 	const startingBlockHeight = 101
 	ctx, cleanUp := createTestCtxFromGraphInstance(
@@ -2938,9 +2873,7 @@ func TestSendToRouteStructuredError(t *testing.T) {
 	}
 
 	rt, err := route.NewRouteFromHops(payAmt, 100, ctx.aliases["a"], hops)
-	if err != nil {
-		t.Fatalf("unable to create route: %v", err)
-	}
+	require.NoError(t, err, "unable to create route")
 
 	finalHopIndex := len(hops)
 	testCases := map[int]lnwire.FailureMessage{
@@ -3003,135 +2936,6 @@ func TestSendToRouteStructuredError(t *testing.T) {
 	}
 }
 
-// TestSendToRouteMultiShardSend checks that a 3-shard payment can be executed
-// using SendToRoute.
-func TestSendToRouteMultiShardSend(t *testing.T) {
-	t.Parallel()
-
-	ctx, cleanup := createTestCtxSingleNode(t, 0)
-	defer cleanup()
-
-	const numShards = 3
-	const payAmt = lnwire.MilliSatoshi(numShards * 10000)
-	node, err := createTestNode()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Create a simple 1-hop route that we will use for all three shards.
-	hops := []*route.Hop{
-		{
-			ChannelID:    1,
-			PubKeyBytes:  node.PubKeyBytes,
-			AmtToForward: payAmt / numShards,
-			MPP:          record.NewMPP(payAmt, [32]byte{}),
-		},
-	}
-
-	sourceNode, err := ctx.graph.SourceNode()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	rt, err := route.NewRouteFromHops(
-		payAmt, 100, sourceNode.PubKeyBytes, hops,
-	)
-	if err != nil {
-		t.Fatalf("unable to create route: %v", err)
-	}
-
-	// The first shard we send we'll fail immediately, to check that we are
-	// still allowed to retry with other shards after a failed one.
-	ctx.router.cfg.Payer.(*mockPaymentAttemptDispatcherOld).setPaymentResult(
-		func(firstHop lnwire.ShortChannelID) ([32]byte, error) {
-			return [32]byte{}, htlcswitch.NewForwardingError(
-				&lnwire.FailFeeInsufficient{
-					Update: lnwire.ChannelUpdate{},
-				}, 1,
-			)
-		})
-
-	// The payment parameter is mostly redundant in SendToRoute. Can be left
-	// empty for this test.
-	var payment lntypes.Hash
-
-	// Send the shard using the created route, and expect an error to be
-	// returned.
-	_, err = ctx.router.SendToRoute(payment, rt)
-	if err == nil {
-		t.Fatalf("expected forwarding error")
-	}
-
-	// Now we'll modify the SendToSwitch method again to wait until all
-	// three shards are initiated before returning a result. We do this by
-	// signalling when the method has been called, and then stop to wait
-	// for the test to deliver the final result on the channel below.
-	waitForResultSignal := make(chan struct{}, numShards)
-	results := make(chan lntypes.Preimage, numShards)
-
-	ctx.router.cfg.Payer.(*mockPaymentAttemptDispatcherOld).setPaymentResult(
-		func(firstHop lnwire.ShortChannelID) ([32]byte, error) {
-
-			// Signal that the shard has been initiated and is
-			// waiting for a result.
-			waitForResultSignal <- struct{}{}
-
-			// Wait for a result before returning it.
-			res, ok := <-results
-			if !ok {
-				return [32]byte{}, fmt.Errorf("failure")
-			}
-			return res, nil
-		})
-
-	// Launch three shards by calling SendToRoute in three goroutines,
-	// returning their final error on the channel.
-	errChan := make(chan error)
-	successes := make(chan lntypes.Preimage)
-
-	for i := 0; i < numShards; i++ {
-		go func() {
-			attempt, err := ctx.router.SendToRoute(payment, rt)
-			if err != nil {
-				errChan <- err
-				return
-			}
-
-			successes <- attempt.Settle.Preimage
-		}()
-	}
-
-	// Wait for all shards to signal they have been initiated.
-	for i := 0; i < numShards; i++ {
-		select {
-		case <-waitForResultSignal:
-		case <-time.After(5 * time.Second):
-			t.Fatalf("not waiting for results")
-		}
-	}
-
-	// Deliver a dummy preimage to all the shard handlers.
-	preimage := lntypes.Preimage{}
-	preimage[4] = 42
-	for i := 0; i < numShards; i++ {
-		results <- preimage
-	}
-
-	// Finally expect all shards to return with the above preimage.
-	for i := 0; i < numShards; i++ {
-		select {
-		case p := <-successes:
-			if p != preimage {
-				t.Fatalf("preimage mismatch")
-			}
-		case err := <-errChan:
-			t.Fatalf("unexpected error from SendToRoute: %v", err)
-		case <-time.After(5 * time.Second):
-			t.Fatalf("result not received")
-		}
-	}
-}
-
 // TestSendToRouteMaxHops asserts that SendToRoute fails when using a route that
 // exceeds the maximum number of hops.
 func TestSendToRouteMaxHops(t *testing.T) {
@@ -3148,11 +2952,8 @@ func TestSendToRouteMaxHops(t *testing.T) {
 		}, 1),
 	}
 
-	testGraph, err := createTestGraphFromChannels(true, testChannels, "a")
-	if err != nil {
-		t.Fatalf("unable to create graph: %v", err)
-	}
-	defer testGraph.cleanUp()
+	testGraph, err := createTestGraphFromChannels(t, true, testChannels, "a")
+	require.NoError(t, err, "unable to create graph")
 
 	const startingBlockHeight = 101
 
@@ -3184,9 +2985,7 @@ func TestSendToRouteMaxHops(t *testing.T) {
 	}
 
 	rt, err := route.NewRouteFromHops(payAmt, 100, ctx.aliases["a"], hops)
-	if err != nil {
-		t.Fatalf("unable to create route: %v", err)
-	}
+	require.NoError(t, err, "unable to create route")
 
 	// Send off the payment request to the router. We expect an error back
 	// indicating that the route is too long.
@@ -3259,11 +3058,8 @@ func TestBuildRoute(t *testing.T) {
 		}, 4),
 	}
 
-	testGraph, err := createTestGraphFromChannels(true, testChannels, "a")
-	if err != nil {
-		t.Fatalf("unable to create graph: %v", err)
-	}
-	defer testGraph.cleanUp()
+	testGraph, err := createTestGraphFromChannels(t, true, testChannels, "a")
+	require.NoError(t, err, "unable to create graph")
 
 	const startingBlockHeight = 101
 
@@ -3499,7 +3295,7 @@ func createDummyTestGraph(t *testing.T) *testGraphInstance {
 		}, 2),
 	}
 
-	testGraph, err := createTestGraphFromChannels(true, testChannels, "a")
+	testGraph, err := createTestGraphFromChannels(t, true, testChannels, "a")
 	require.NoError(t, err, "failed to create graph")
 	return testGraph
 }
@@ -3562,6 +3358,10 @@ func TestSendMPPaymentSucceed(t *testing.T) {
 		NextPaymentID: func() (uint64, error) {
 			next := atomic.AddUint64(&uniquePaymentID, 1)
 			return next, nil
+		},
+
+		IsAlias: func(scid lnwire.ShortChannelID) bool {
+			return false
 		},
 	})
 	require.NoError(t, err, "failed to create router")
@@ -3649,6 +3449,7 @@ func TestSendMPPaymentSucceed(t *testing.T) {
 			}
 		}
 	})
+	controlTower.On("DeleteFailedAttempts", identifier).Return(nil)
 
 	// Call the actual method SendPayment on router. This is place inside a
 	// goroutine so we can set a timeout for the whole test, in case
@@ -3724,6 +3525,10 @@ func TestSendMPPaymentSucceedOnExtraShards(t *testing.T) {
 		NextPaymentID: func() (uint64, error) {
 			next := atomic.AddUint64(&uniquePaymentID, 1)
 			return next, nil
+		},
+
+		IsAlias: func(scid lnwire.ShortChannelID) bool {
+			return false
 		},
 	})
 	require.NoError(t, err, "failed to create router")
@@ -3860,6 +3665,7 @@ func TestSendMPPaymentSucceedOnExtraShards(t *testing.T) {
 			return
 		}
 	})
+	controlTower.On("DeleteFailedAttempts", identifier).Return(nil)
 
 	// Call the actual method SendPayment on router. This is place inside a
 	// goroutine so we can set a timeout for the whole test, in case
@@ -3931,6 +3737,10 @@ func TestSendMPPaymentFailed(t *testing.T) {
 		NextPaymentID: func() (uint64, error) {
 			next := atomic.AddUint64(&uniquePaymentID, 1)
 			return next, nil
+		},
+
+		IsAlias: func(scid lnwire.ShortChannelID) bool {
+			return false
 		},
 	})
 	require.NoError(t, err, "failed to create router")
@@ -4132,6 +3942,10 @@ func TestSendMPPaymentFailedWithShardsInFlight(t *testing.T) {
 			next := atomic.AddUint64(&uniquePaymentID, 1)
 			return next, nil
 		},
+
+		IsAlias: func(scid lnwire.ShortChannelID) bool {
+			return false
+		},
 	})
 	require.NoError(t, err, "failed to create router")
 
@@ -4183,10 +3997,14 @@ func TestSendMPPaymentFailedWithShardsInFlight(t *testing.T) {
 	// Create a buffered chan and it will be returned by GetPaymentResult.
 	payer.resultChan = make(chan *htlcswitch.PaymentResult, 10)
 
-	// We use the failAttemptCount to track how many attempts we want to
-	// fail. Each time the following mock method is called, the count gets
-	// updated.
-	failAttemptCount := 0
+	// We use the getPaymentResultCnt to track how many times we called
+	// GetPaymentResult. As shard launch is sequential, and we fail the
+	// first shard that calls GetPaymentResult, we may end up with different
+	// counts since the lifecycle itself is asynchronous. To avoid flakes
+	// due to this undeterminsitic behavior, we'll compare the final
+	// getPaymentResultCnt with other counters to create a final test
+	// expectation.
+	getPaymentResultCnt := 0
 	payer.On("GetPaymentResult",
 		mock.Anything, identifier, mock.Anything,
 	).Run(func(args mock.Arguments) {
@@ -4194,10 +4012,10 @@ func TestSendMPPaymentFailedWithShardsInFlight(t *testing.T) {
 		// the read-only chan.
 
 		// Update the counter.
-		failAttemptCount++
+		getPaymentResultCnt++
 
 		// We fail the first attempt with terminal error.
-		if failAttemptCount == 1 {
+		if getPaymentResultCnt == 1 {
 			payer.resultChan <- &htlcswitch.PaymentResult{
 				Error: htlcswitch.NewForwardingError(
 					&lnwire.FailIncorrectDetails{},
@@ -4205,15 +4023,20 @@ func TestSendMPPaymentFailedWithShardsInFlight(t *testing.T) {
 				),
 			}
 			return
-
 		}
 
-		// For the rest attempts we will NOT send anything to the
-		// resultChan, thus making all the shards in active state,
-		// neither settled or failed.
+		// For the rest of the attempts we'll simulate that a network
+		// result update_fail_htlc has been received. This way the
+		// payment will fail cleanly.
+		payer.resultChan <- &htlcswitch.PaymentResult{
+			Error: htlcswitch.NewForwardingError(
+				&lnwire.FailTemporaryChannelFailure{},
+				1,
+			),
+		}
 	})
 
-	// Mock the FailAttempt method to fail EXACTLY once.
+	// Mock the FailAttempt method to fail (at least once).
 	var failedAttempt channeldb.HTLCAttempt
 	controlTower.On("FailAttempt",
 		identifier, mock.Anything, mock.Anything,
@@ -4223,22 +4046,27 @@ func TestSendMPPaymentFailedWithShardsInFlight(t *testing.T) {
 		failedAttempt = payment.HTLCs[0]
 		failedAttempt.Failure = &channeldb.HTLCFailInfo{}
 		payment.HTLCs[0] = failedAttempt
-	}).Once()
+	})
 
 	// Setup ReportPaymentFail to return nil reason and error so the
 	// payment won't fail.
 	failureReason := channeldb.FailureReasonPaymentDetails
+	cntReportPaymentFail := 0
 	missionControl.On("ReportPaymentFail",
 		mock.Anything, mock.Anything, mock.Anything, mock.Anything,
 	).Return(&failureReason, nil).Run(func(args mock.Arguments) {
 		payment.FailureReason = &failureReason
-	}).Once()
+		cntReportPaymentFail++
+	})
 
 	// Simple mocking the rest.
-	controlTower.On("Fail", identifier, failureReason).Return(nil).Once()
+	cntFail := 0
+	controlTower.On("Fail", identifier, failureReason).Return(nil)
 	payer.On("SendHTLC",
 		mock.Anything, mock.Anything, mock.Anything,
-	).Return(nil)
+	).Return(nil).Run(func(args mock.Arguments) {
+		cntFail++
+	})
 
 	// Call the actual method SendPayment on router. This is place inside a
 	// goroutine so we can set a timeout for the whole test, in case
@@ -4260,6 +4088,9 @@ func TestSendMPPaymentFailedWithShardsInFlight(t *testing.T) {
 	// methods are called as expected.
 	require.Error(t, err, "expected send payment error")
 	require.EqualValues(t, [32]byte{}, p, "preimage not match")
+	require.GreaterOrEqual(t, getPaymentResultCnt, 1)
+	require.Equal(t, getPaymentResultCnt, cntReportPaymentFail)
+	require.Equal(t, getPaymentResultCnt, cntFail)
 
 	controlTower.AssertExpectations(t)
 	payer.AssertExpectations(t)
@@ -4341,7 +4172,343 @@ func TestBlockDifferenceFix(t *testing.T) {
 
 		return nil
 	}, testTimeout)
-	if err != nil {
-		t.Fatalf("block height wasn't updated: %v", err)
+	require.NoError(t, err, "block height wasn't updated")
+}
+
+// TestSendToRouteSkipTempErrSuccess validates a successful payment send.
+func TestSendToRouteSkipTempErrSuccess(t *testing.T) {
+	var (
+		payHash     lntypes.Hash
+		payAmt      = lnwire.MilliSatoshi(10000)
+		testAttempt = &channeldb.HTLCAttempt{}
+	)
+
+	node, err := createTestNode()
+	require.NoError(t, err)
+
+	// Create a simple 1-hop route.
+	hops := []*route.Hop{
+		{
+			ChannelID:    1,
+			PubKeyBytes:  node.PubKeyBytes,
+			AmtToForward: payAmt,
+			MPP:          record.NewMPP(payAmt, [32]byte{}),
+		},
 	}
+	rt, err := route.NewRouteFromHops(payAmt, 100, node.PubKeyBytes, hops)
+	require.NoError(t, err)
+
+	// Create mockers.
+	controlTower := &mockControlTower{}
+	payer := &mockPaymentAttemptDispatcher{}
+	missionControl := &mockMissionControl{}
+
+	// Create the router.
+	router := &ChannelRouter{cfg: &Config{
+		Control:        controlTower,
+		Payer:          payer,
+		MissionControl: missionControl,
+		Clock:          clock.NewTestClock(time.Unix(1, 0)),
+		NextPaymentID: func() (uint64, error) {
+			return 0, nil
+		},
+	}}
+
+	// Register mockers with the expected method calls.
+	controlTower.On("InitPayment", payHash, mock.Anything).Return(nil)
+	controlTower.On("RegisterAttempt", payHash, mock.Anything).Return(nil)
+	controlTower.On("SettleAttempt",
+		payHash, mock.Anything, mock.Anything,
+	).Return(testAttempt, nil)
+
+	payer.On("SendHTLC",
+		mock.Anything, mock.Anything, mock.Anything,
+	).Return(nil)
+
+	// Create a buffered chan and it will be returned by GetPaymentResult.
+	payer.resultChan = make(chan *htlcswitch.PaymentResult, 1)
+	payer.On("GetPaymentResult",
+		mock.Anything, mock.Anything, mock.Anything,
+	).Run(func(_ mock.Arguments) {
+		// Send a successful payment result.
+		payer.resultChan <- &htlcswitch.PaymentResult{}
+	})
+
+	missionControl.On("ReportPaymentSuccess",
+		mock.Anything, rt,
+	).Return(nil)
+
+	// Expect a successful send to route.
+	attempt, err := router.SendToRouteSkipTempErr(payHash, rt)
+	require.NoError(t, err)
+	require.Equal(t, testAttempt, attempt)
+
+	// Assert the above methods are called as expected.
+	controlTower.AssertExpectations(t)
+	payer.AssertExpectations(t)
+	missionControl.AssertExpectations(t)
+}
+
+// TestSendToRouteSkipTempErrTempFailure validates a temporary failure won't
+// cause the payment to be failed.
+func TestSendToRouteSkipTempErrTempFailure(t *testing.T) {
+	var (
+		payHash     lntypes.Hash
+		payAmt      = lnwire.MilliSatoshi(10000)
+		testAttempt = &channeldb.HTLCAttempt{}
+	)
+
+	node, err := createTestNode()
+	require.NoError(t, err)
+
+	// Create a simple 1-hop route.
+	hops := []*route.Hop{
+		{
+			ChannelID:    1,
+			PubKeyBytes:  node.PubKeyBytes,
+			AmtToForward: payAmt,
+			MPP:          record.NewMPP(payAmt, [32]byte{}),
+		},
+	}
+	rt, err := route.NewRouteFromHops(payAmt, 100, node.PubKeyBytes, hops)
+	require.NoError(t, err)
+
+	// Create mockers.
+	controlTower := &mockControlTower{}
+	payer := &mockPaymentAttemptDispatcher{}
+	missionControl := &mockMissionControl{}
+
+	// Create the router.
+	router := &ChannelRouter{cfg: &Config{
+		Control:        controlTower,
+		Payer:          payer,
+		MissionControl: missionControl,
+		Clock:          clock.NewTestClock(time.Unix(1, 0)),
+		NextPaymentID: func() (uint64, error) {
+			return 0, nil
+		},
+	}}
+
+	// Register mockers with the expected method calls.
+	controlTower.On("InitPayment", payHash, mock.Anything).Return(nil)
+	controlTower.On("RegisterAttempt", payHash, mock.Anything).Return(nil)
+	controlTower.On("FailAttempt",
+		payHash, mock.Anything, mock.Anything,
+	).Return(testAttempt, nil)
+
+	payer.On("SendHTLC",
+		mock.Anything, mock.Anything, mock.Anything,
+	).Return(nil)
+
+	// Create a buffered chan and it will be returned by GetPaymentResult.
+	payer.resultChan = make(chan *htlcswitch.PaymentResult, 1)
+
+	// Create the error to be returned.
+	tempErr := htlcswitch.NewForwardingError(
+		&lnwire.FailTemporaryChannelFailure{},
+		1,
+	)
+
+	// Mock GetPaymentResult to return a failure.
+	payer.On("GetPaymentResult",
+		mock.Anything, mock.Anything, mock.Anything,
+	).Run(func(_ mock.Arguments) {
+		// Send an attempt failure.
+		payer.resultChan <- &htlcswitch.PaymentResult{
+			Error: tempErr,
+		}
+	})
+
+	// Return a nil reason to mock a temporary failure.
+	missionControl.On("ReportPaymentFail",
+		mock.Anything, rt, mock.Anything, mock.Anything,
+	).Return(nil, nil)
+
+	// Expect a failed send to route.
+	attempt, err := router.SendToRouteSkipTempErr(payHash, rt)
+	require.Equal(t, tempErr, err)
+	require.Equal(t, testAttempt, attempt)
+
+	// Assert the above methods are called as expected.
+	controlTower.AssertExpectations(t)
+	payer.AssertExpectations(t)
+	missionControl.AssertExpectations(t)
+}
+
+// TestSendToRouteSkipTempErrPermanentFailure validates a permanent failure
+// will fail the payment.
+func TestSendToRouteSkipTempErrPermanentFailure(t *testing.T) {
+	var (
+		payHash     lntypes.Hash
+		payAmt      = lnwire.MilliSatoshi(10000)
+		testAttempt = &channeldb.HTLCAttempt{}
+	)
+
+	node, err := createTestNode()
+	require.NoError(t, err)
+
+	// Create a simple 1-hop route.
+	hops := []*route.Hop{
+		{
+			ChannelID:    1,
+			PubKeyBytes:  node.PubKeyBytes,
+			AmtToForward: payAmt,
+			MPP:          record.NewMPP(payAmt, [32]byte{}),
+		},
+	}
+	rt, err := route.NewRouteFromHops(payAmt, 100, node.PubKeyBytes, hops)
+	require.NoError(t, err)
+
+	// Create mockers.
+	controlTower := &mockControlTower{}
+	payer := &mockPaymentAttemptDispatcher{}
+	missionControl := &mockMissionControl{}
+
+	// Create the router.
+	router := &ChannelRouter{cfg: &Config{
+		Control:        controlTower,
+		Payer:          payer,
+		MissionControl: missionControl,
+		Clock:          clock.NewTestClock(time.Unix(1, 0)),
+		NextPaymentID: func() (uint64, error) {
+			return 0, nil
+		},
+	}}
+
+	// Register mockers with the expected method calls.
+	controlTower.On("InitPayment", payHash, mock.Anything).Return(nil)
+	controlTower.On("RegisterAttempt", payHash, mock.Anything).Return(nil)
+	controlTower.On("FailAttempt",
+		payHash, mock.Anything, mock.Anything,
+	).Return(testAttempt, nil)
+
+	// Expect the payment to be failed.
+	controlTower.On("Fail", payHash, mock.Anything).Return(nil)
+
+	payer.On("SendHTLC",
+		mock.Anything, mock.Anything, mock.Anything,
+	).Return(nil)
+
+	// Create a buffered chan and it will be returned by GetPaymentResult.
+	payer.resultChan = make(chan *htlcswitch.PaymentResult, 1)
+
+	// Create the error to be returned.
+	permErr := htlcswitch.NewForwardingError(
+		&lnwire.FailIncorrectDetails{}, 1,
+	)
+
+	// Mock GetPaymentResult to return a failure.
+	payer.On("GetPaymentResult",
+		mock.Anything, mock.Anything, mock.Anything,
+	).Run(func(_ mock.Arguments) {
+		// Send a permanent failure.
+		payer.resultChan <- &htlcswitch.PaymentResult{
+			Error: permErr,
+		}
+	})
+
+	// Return a reason to mock a permanent failure.
+	failureReason := channeldb.FailureReasonPaymentDetails
+	missionControl.On("ReportPaymentFail",
+		mock.Anything, rt, mock.Anything, mock.Anything,
+	).Return(&failureReason, nil)
+
+	// Expect a failed send to route.
+	attempt, err := router.SendToRouteSkipTempErr(payHash, rt)
+	require.Equal(t, permErr, err)
+	require.Equal(t, testAttempt, attempt)
+
+	// Assert the above methods are called as expected.
+	controlTower.AssertExpectations(t)
+	payer.AssertExpectations(t)
+	missionControl.AssertExpectations(t)
+}
+
+// TestSendToRouteTempFailure validates a temporary failure will cause the
+// payment to be failed.
+func TestSendToRouteTempFailure(t *testing.T) {
+	var (
+		payHash     lntypes.Hash
+		payAmt      = lnwire.MilliSatoshi(10000)
+		testAttempt = &channeldb.HTLCAttempt{}
+	)
+
+	node, err := createTestNode()
+	require.NoError(t, err)
+
+	// Create a simple 1-hop route.
+	hops := []*route.Hop{
+		{
+			ChannelID:    1,
+			PubKeyBytes:  node.PubKeyBytes,
+			AmtToForward: payAmt,
+			MPP:          record.NewMPP(payAmt, [32]byte{}),
+		},
+	}
+	rt, err := route.NewRouteFromHops(payAmt, 100, node.PubKeyBytes, hops)
+	require.NoError(t, err)
+
+	// Create mockers.
+	controlTower := &mockControlTower{}
+	payer := &mockPaymentAttemptDispatcher{}
+	missionControl := &mockMissionControl{}
+
+	// Create the router.
+	router := &ChannelRouter{cfg: &Config{
+		Control:        controlTower,
+		Payer:          payer,
+		MissionControl: missionControl,
+		Clock:          clock.NewTestClock(time.Unix(1, 0)),
+		NextPaymentID: func() (uint64, error) {
+			return 0, nil
+		},
+	}}
+
+	// Register mockers with the expected method calls.
+	controlTower.On("InitPayment", payHash, mock.Anything).Return(nil)
+	controlTower.On("RegisterAttempt", payHash, mock.Anything).Return(nil)
+	controlTower.On("FailAttempt",
+		payHash, mock.Anything, mock.Anything,
+	).Return(testAttempt, nil)
+
+	// Expect the payment to be failed.
+	controlTower.On("Fail", payHash, mock.Anything).Return(nil)
+
+	payer.On("SendHTLC",
+		mock.Anything, mock.Anything, mock.Anything,
+	).Return(nil)
+
+	// Create a buffered chan and it will be returned by GetPaymentResult.
+	payer.resultChan = make(chan *htlcswitch.PaymentResult, 1)
+
+	// Create the error to be returned.
+	tempErr := htlcswitch.NewForwardingError(
+		&lnwire.FailTemporaryChannelFailure{},
+		1,
+	)
+
+	// Mock GetPaymentResult to return a failure.
+	payer.On("GetPaymentResult",
+		mock.Anything, mock.Anything, mock.Anything,
+	).Run(func(_ mock.Arguments) {
+		// Send an attempt failure.
+		payer.resultChan <- &htlcswitch.PaymentResult{
+			Error: tempErr,
+		}
+	})
+
+	// Return a nil reason to mock a temporary failure.
+	missionControl.On("ReportPaymentFail",
+		mock.Anything, rt, mock.Anything, mock.Anything,
+	).Return(nil, nil)
+
+	// Expect a failed send to route.
+	attempt, err := router.SendToRoute(payHash, rt)
+	require.Equal(t, tempErr, err)
+	require.Equal(t, testAttempt, attempt)
+
+	// Assert the above methods are called as expected.
+	controlTower.AssertExpectations(t)
+	payer.AssertExpectations(t)
+	missionControl.AssertExpectations(t)
 }

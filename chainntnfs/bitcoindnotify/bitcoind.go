@@ -7,11 +7,11 @@ import (
 	"sync/atomic"
 
 	"github.com/btcsuite/btcd/btcjson"
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
 	"github.com/btcsuite/btcwallet/chain"
 	"github.com/lightningnetwork/lnd/blockcache"
 	"github.com/lightningnetwork/lnd/chainntnfs"
@@ -19,9 +19,14 @@ import (
 )
 
 const (
-	// notifierType uniquely identifies this concrete implementation of the
-	// ChainNotifier interface.
-	notifierType = "bitcoind"
+	// notifierType uniquely identifies a concrete implementation of the
+	// ChainNotifier interface that makes use of the bitcoind ZMQ interface.
+	notifierTypeZMQ = "bitcoind"
+
+	// notifierTypeRPCPolling uniquely identifies a concrete implementation
+	// of the ChainNotifier interface that makes use of the bitcoind RPC
+	// interface.
+	notifierTypeRPCPolling = "bitcoind-rpc-polling"
 )
 
 // TODO(roasbeef): generalize struct below:
@@ -559,6 +564,7 @@ func (b *BitcoindNotifier) confDetailsManually(confRequest chainntnfs.ConfReques
 				BlockHash:   blockHash,
 				BlockHeight: height,
 				TxIndex:     uint32(txIndex),
+				Block:       block,
 			}, chainntnfs.TxFoundManually, nil
 		}
 	}
@@ -579,12 +585,12 @@ func (b *BitcoindNotifier) handleBlockConnected(block chainntnfs.BlockEpoch) err
 	if err != nil {
 		return fmt.Errorf("unable to get block: %v", err)
 	}
-	txns := btcutil.NewBlock(rawBlock).Transactions()
+	utilBlock := btcutil.NewBlock(rawBlock)
 
 	// We'll then extend the txNotifier's height with the information of
 	// this new block, which will handle all of the notification logic for
 	// us.
-	err = b.txNotifier.ConnectTip(block.Hash, uint32(block.Height), txns)
+	err = b.txNotifier.ConnectTip(utilBlock, uint32(block.Height))
 	if err != nil {
 		return fmt.Errorf("unable to connect tip: %v", err)
 	}
@@ -839,15 +845,15 @@ func (b *BitcoindNotifier) historicalSpendDetails(
 // channel. Once it has reached all of its confirmations, a notification will be
 // sent across the 'Confirmed' channel.
 func (b *BitcoindNotifier) RegisterConfirmationsNtfn(txid *chainhash.Hash,
-	pkScript []byte,
-	numConfs, heightHint uint32) (*chainntnfs.ConfirmationEvent, error) {
+	pkScript []byte, numConfs, heightHint uint32,
+	opts ...chainntnfs.NotifierOption) (*chainntnfs.ConfirmationEvent, error) {
 
 	// Register the conf notification with the TxNotifier. A non-nil value
 	// for `dispatch` will be returned if we are required to perform a
 	// manual scan for the confirmation. Otherwise the notifier will begin
 	// watching at tip for the transaction to confirm.
 	ntfn, err := b.txNotifier.RegisterConf(
-		txid, pkScript, numConfs, heightHint,
+		txid, pkScript, numConfs, heightHint, opts...,
 	)
 	if err != nil {
 		return nil, err

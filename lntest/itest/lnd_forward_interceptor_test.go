@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
 	"github.com/lightningnetwork/lnd/chainreg"
 	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/routerrpc"
@@ -41,10 +41,10 @@ func testForwardInterceptorDedupHtlc(net *lntest.NetworkHarness, t *harnessTest)
 	defer shutdownAndAssert(net, t, alice)
 
 	bob := net.NewNode(t.t, "bob", nil)
-	defer shutdownAndAssert(net, t, alice)
+	defer shutdownAndAssert(net, t, bob)
 
 	carol := net.NewNode(t.t, "carol", nil)
-	defer shutdownAndAssert(net, t, alice)
+	defer shutdownAndAssert(net, t, carol)
 
 	tc := newInterceptorTestContext(t, net, alice, bob, carol)
 
@@ -199,21 +199,21 @@ func testForwardInterceptorDedupHtlc(net *lntest.NetworkHarness, t *harnessTest)
 // Alice sends 4 different payments to Carol while the interceptor handles
 // differently the htlcs.
 // The test ensures that:
-// 1. Intercepted failed htlcs result in no payment (invoice is not settled).
-// 2. Intercepted resumed htlcs result in a payment (invoice is settled).
-// 3. Intercepted held htlcs result in no payment (invoice is not settled).
-// 4. When Interceptor disconnects it resumes all held htlcs, which result in
-//    valid payment (invoice is settled).
+//  1. Intercepted failed htlcs result in no payment (invoice is not settled).
+//  2. Intercepted resumed htlcs result in a payment (invoice is settled).
+//  3. Intercepted held htlcs result in no payment (invoice is not settled).
+//  4. When Interceptor disconnects it resumes all held htlcs, which result in
+//     valid payment (invoice is settled).
 func testForwardInterceptorBasic(net *lntest.NetworkHarness, t *harnessTest) {
 	// Initialize the test context with 3 connected nodes.
 	alice := net.NewNode(t.t, "alice", nil)
 	defer shutdownAndAssert(net, t, alice)
 
 	bob := net.NewNode(t.t, "bob", nil)
-	defer shutdownAndAssert(net, t, alice)
+	defer shutdownAndAssert(net, t, bob)
 
 	carol := net.NewNode(t.t, "carol", nil)
-	defer shutdownAndAssert(net, t, alice)
+	defer shutdownAndAssert(net, t, carol)
 
 	testContext := newInterceptorTestContext(t, net, alice, bob, carol)
 
